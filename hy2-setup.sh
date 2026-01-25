@@ -20,10 +20,6 @@ export DOMAIN=$(echo "$input_domain" | idn)
 read -ep "Enter your email: " input_email
 export EMAIL=$(echo "$input_email")
 
-read -ep "Enter masquerade url: " input_masquerade_url
-export MASQUERADE_URL=$(echo "$input_masquerade_url")
-
-
 docker_install() {
   curl -fsSL https://get.docker.com | bash
 }
@@ -40,6 +36,8 @@ hysteria_setup() {
   cd /opt/hysteria-vps-setup
     envsubst < "$SCRIPT_DIR/templates_for_script/compose" > ./docker-compose.yml
     envsubst < "$SCRIPT_DIR/templates_for_script/hysteria" > ./hysteria.yaml
+    mkdir -p /opt/hysteria-vps-setup/templates
+    envsubst < "$SCRIPT_DIR/templates_for_script/confluence_page" > ./templates/index.html
 }
 
 hysteria_setup

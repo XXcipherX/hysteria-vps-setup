@@ -16,7 +16,6 @@ obfs:
     password: ${SALAMANDER_PASS}
 
 masquerade:
-  type: proxy
-  proxy:
-    url: ${MASQUERADE_URL}
-    rewriteHost: true
+  type: file
+  file:
+    dir: /opt/hysteria-vps-setup/templates 

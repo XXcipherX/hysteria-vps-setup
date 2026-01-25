@@ -1,0 +1,22 @@
+listen: :443
+
+acme:
+  domains:
+    - ${DOMAIN}
+  email: ${EMAIL}
+  storage: /acme
+
+auth:
+  type: password
+  password: ${PASS}
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${SALAMANDER_PASS}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: ${MASQUERADE_URL}
+    rewriteHost: true

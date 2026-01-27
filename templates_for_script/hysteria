@@ -15,7 +15,7 @@ obfs:
   salamander:
     password: ${SALAMANDER_PASS}
 
-masquerade:
-  type: file
-  file:
-    dir: /opt/hysteria-vps-setup/templates 
+#masquerade:
+#  type: file
+#  file:
+#    dir: /opt/hysteria-vps-setup/templates 

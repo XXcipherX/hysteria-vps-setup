@@ -86,14 +86,35 @@ iptables-persistent iptables-persistent/autosave_v6 boolean true
 EOF
 
   apt-get -y install iptables-persistent netfilter-persistent
-  iptables -A INPUT -p icmp -j ACCEPT
-  iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -A INPUT -p tcp -m conntrack --ctstate NEW --dport $SSH_PORT -j ACCEPT
-  iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-  iptables -A INPUT -p udp --dport 443 -j ACCEPT
-  iptables -A INPUT -i lo -j ACCEPT
-  iptables -A OUTPUT -o lo -j ACCEPT
+
+  iptables -F
+  iptables -X
   iptables -P INPUT DROP
+  iptables -P FORWARD DROP
+  iptables -P OUTPUT ACCEPT
+
+  iptables -A INPUT -i lo -j ACCEPT
+  iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+  iptables -A INPUT -p icmp -j ACCEPT
+  iptables -A INPUT -p tcp -m conntrack --ctstate NEW --dport $SSH_PORT -j ACCEPT
+  iptables -A INPUT -p tcp -m conntrack --ctstate NEW --dport 80 -j ACCEPT
+  iptables -A INPUT -p udp -m conntrack --ctstate NEW --dport 443 -j ACCEPT
+
+  ip6tables -F
+  ip6tables -X
+  ip6tables -P INPUT DROP
+  ip6tables -P FORWARD DROP
+  ip6tables -P OUTPUT ACCEPT
+
+  ip6tables -A INPUT -i lo -j ACCEPT
+  ip6tables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  ip6tables -A INPUT -m conntrack --ctstate INVALID -j DROP
+  ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+  ip6tables -A INPUT -p tcp -m conntrack --ctstate NEW --dport $SSH_PORT -j ACCEPT
+  ip6tables -A INPUT -p tcp -m conntrack --ctstate NEW --dport 80 -j ACCEPT
+  ip6tables -A INPUT -p udp -m conntrack --ctstate NEW --dport 443 -j ACCEPT
+
   netfilter-persistent save
 }
 

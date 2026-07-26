@@ -1,0 +1,5 @@
+:4123 {
+	header -Server
+	bind 127.0.0.1
+	respond 404
+}

@@ -1,0 +1,20 @@
+listen: :443
+
+acme:
+  type: http
+  domains:
+    - ${HYSTERIA_DOMAIN}
+  email: ${HYSTERIA_EMAIL}
+  ca: letsencrypt
+  dir: /var/lib/hysteria/acme
+
+auth:
+  type: password
+  password: ${HYSTERIA_PASSWORD}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: http://127.0.0.1:4123
+    rewriteHost: true
+  listenHTTPS: :443

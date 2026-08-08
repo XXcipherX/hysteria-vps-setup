@@ -3,15 +3,15 @@
 [![CI](https://github.com/XXcipherX/hysteria-vps-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/XXcipherX/hysteria-vps-setup/actions/workflows/ci.yml)
 
 Интерактивный установщик Hysteria 2 для VPS. Разворачивает сервер в Docker,
-настраивает автоматическое получение TLS-сертификата, HTTP-маскировку через
-Caddy и выводит готовый URI для подключения клиента.
+настраивает автоматическое получение TLS-сертификата, встроенную
+HTTP/HTTPS-маскировку и выводит готовый URI для подключения клиента.
 
 ## Возможности
 
 - установка Docker Engine и Compose plugin при необходимости;
 - получение TLS-сертификата через ACME HTTP-01;
 - криптографически стойкий пароль и готовый `hysteria2://` URI;
-- локальный Caddy для HTTP/HTTPS-маскировки;
+- встроенная HTTP/HTTPS-маскировка Hysteria 2;
 - опциональная настройка SSH и nftables с автоматическим откатом;
 - рекомендуемые Hysteria 2 размеры UDP-буферов;
 - резервные копии при повторной установке;
@@ -58,17 +58,16 @@ sudo bash vps-setup.sh
 ### Развертывание Hysteria 2
 
 Установщик проверяет домен, DNS-записи и необходимые зависимости, затем
-создает конфигурацию в `/opt/hysteria-vps-setup` и запускает два контейнера в
-режиме host network:
+создает конфигурацию в `/opt/hysteria-vps-setup` и запускает контейнер в режиме
+host network:
 
 | Контейнер | Образ | Назначение |
 | --- | --- | --- |
 | `hysteria` | `tobyxdd/hysteria:v2` | Hysteria 2, ACME и HTTPS-маскировка |
-| `hysteria-masquerade` | `caddy:2-alpine` | Локальный HTTP backend |
 
 Hysteria слушает `443/udp` и `443/tcp`. Запросы, не прошедшие
-Hysteria-аутентификацию, проксируются в Caddy на `127.0.0.1:4123`, где получают
-обычный HTTP-ответ `404`. Порт `4123` доступен только через loopback.
+Hysteria-аутентификацию, обрабатываются встроенной маскировкой и получают
+обычный HTTP-ответ `404`.
 
 ### Настройка безопасности
 
@@ -119,7 +118,6 @@ hysteria2://PASSWORD@example.com:443/?sni=example.com#example.com
 
 ```text
 /opt/hysteria-vps-setup/docker-compose.yml
-/opt/hysteria-vps-setup/Caddyfile
 /opt/hysteria-vps-setup/hysteria/config.yaml
 /opt/hysteria-vps-setup/hysteria/acme/
 ```

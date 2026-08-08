@@ -59,7 +59,7 @@ check_platform() {
 
 check_repository_files() {
   local file
-  for file in caddy compose hysteria; do
+  for file in compose hysteria; do
     [[ -f "$SCRIPT_DIR/templates_for_script/$file" ]] || die "Missing required template: $file"
   done
   for file in firewall.sh optimize.sh; do
@@ -133,11 +133,11 @@ read_security_options() {
     return 0
   fi
 
-  read -r -e -p "Enter SSH port (default 22; ports 80, 443 and 4123 are reserved): " input_ssh_port
+  read -r -e -p "Enter SSH port (default 22; ports 80 and 443 are reserved): " input_ssh_port
   input_ssh_port="${input_ssh_port:-22}"
   while ! [[ "$input_ssh_port" =~ ^[0-9]+$ ]] \
     || (( 10#$input_ssh_port < 1 || 10#$input_ssh_port > 65535 )) \
-    || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" || "$input_ssh_port" == "4123" ]]; do
+    || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" ]]; do
     read -r -e -p "Invalid or reserved port. Enter again: " input_ssh_port
     input_ssh_port="${input_ssh_port:-22}"
   done
@@ -199,7 +199,6 @@ generate_credentials() {
 
 render_configs() {
   backup_path "$INSTALL_DIR/docker-compose.yml"
-  backup_path "$INSTALL_DIR/Caddyfile"
   backup_path "$INSTALL_DIR/hysteria/config.yaml"
   backup_path "$INSTALL_DIR/hysteria/acme"
 
@@ -219,7 +218,6 @@ render_configs() {
   install -m 0600 "$RENDER_TMP_FILE" "$INSTALL_DIR/hysteria/config.yaml"
   rm -f -- "$RENDER_TMP_FILE"
 
-  install -m 0644 "$SCRIPT_DIR/templates_for_script/caddy" "$INSTALL_DIR/Caddyfile"
   RENDER_TMP_FILE=""
 }
 
@@ -349,19 +347,16 @@ hysteria_version() {
 start_services() {
   local attempt
 
-  info "Validating Compose and Caddy configuration..."
+  info "Validating Compose configuration..."
   docker compose -f "$INSTALL_DIR/docker-compose.yml" config -q
   docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
-  docker run --rm \
-    -v "$INSTALL_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
-    caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
 
-  info "Starting Hysteria 2 and its local masquerade backend..."
-  docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d --remove-orphans
+  info "Starting Hysteria 2..."
+  docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d
 
   for ((attempt = 1; attempt <= 20; attempt++)); do
-    if container_running hysteria && container_running hysteria-masquerade; then
-      ok "Containers are running"
+    if container_running hysteria; then
+      ok "Hysteria container is running"
       return 0
     fi
     sleep 2

@@ -25,7 +25,6 @@ envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
   < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
 envsubst '${HYSTERIA_IMAGE}' \
   < templates_for_script/compose > "$TMP_DIR/docker-compose.yml"
-cp templates_for_script/caddy "$TMP_DIR/Caddyfile"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -57,13 +56,13 @@ assert hysteria["auth"] == {
     "password": "safe_password-123",
 }
 assert "obfs" not in hysteria
-assert hysteria["masquerade"]["proxy"]["url"] == "http://127.0.0.1:4123"
+assert set(hysteria["masquerade"]) == {"listenHTTPS"}
 assert hysteria["masquerade"]["listenHTTPS"] == ":443"
 
 services = compose["services"]
+assert set(services) == {"hysteria"}
 assert services["hysteria"]["image"] == "tobyxdd/hysteria:v2"
 assert services["hysteria"]["network_mode"] == "host"
-assert services["caddy"]["network_mode"] == "host"
 PY
 elif [[ -n "${YQ_BIN:-}" && -x "$YQ_BIN" ]]; then
   "$YQ_BIN" eval '.' "$TMP_DIR/config.yaml" >/dev/null
@@ -79,9 +78,6 @@ if grep -R '\${HYSTERIA_' "$TMP_DIR"; then
   echo "Unrendered Hysteria template variable found" >&2
   exit 1
 fi
-grep -Fq 'bind 127.0.0.1' "$TMP_DIR/Caddyfile"
-grep -Fq 'respond 404' "$TMP_DIR/Caddyfile"
-
 grep -Fq 'TABLE_NAME="hysteria_vps_filter"' scripts/firewall.sh
 grep -Fq 'udp dport { $udp_ports } accept' scripts/firewall.sh
 grep -Fq 'TCP_PORTS="${HVS_TCP_PORTS:-80,443}"' scripts/firewall.sh
@@ -107,7 +103,6 @@ fi
 
 grep -Fq '443/udp is publicly listening for Hysteria 2' scripts/diagnose.sh
 grep -Fq '443/tcp is publicly listening for HTTPS masquerade' scripts/diagnose.sh
-grep -Fq '4123/tcp is loopback-only' scripts/diagnose.sh
 
 grep -Fq 'HYSTERIA_IMAGE="tobyxdd/hysteria:v2"' vps-setup.sh
 grep -Fq 'hysteria2://${HYSTERIA_PASSWORD}@${HYSTERIA_DOMAIN}:443/' vps-setup.sh

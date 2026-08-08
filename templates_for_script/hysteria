@@ -13,8 +13,4 @@ auth:
   password: ${HYSTERIA_PASSWORD}
 
 masquerade:
-  type: proxy
-  proxy:
-    url: http://127.0.0.1:4123
-    rewriteHost: true
   listenHTTPS: :443

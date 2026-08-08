@@ -1,20 +1,9 @@
 services:
-  caddy:
-    image: caddy:2-alpine
-    container_name: hysteria-masquerade
-    restart: always
-    network_mode: host
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]
-
   hysteria:
     image: ${HYSTERIA_IMAGE}
     container_name: hysteria
     restart: always
     network_mode: host
-    depends_on:
-      - caddy
     volumes:
       - ./hysteria/config.yaml:/etc/hysteria/config.yaml:ro
       - ./hysteria/acme:/var/lib/hysteria/acme

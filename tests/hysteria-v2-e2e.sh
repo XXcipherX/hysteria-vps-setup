@@ -47,6 +47,8 @@ envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
   < "$REPO_ROOT/templates_for_script/hysteria" > "$E2E_DIR/hysteria/config.yaml"
 envsubst '${HYSTERIA_IMAGE}' \
   < "$REPO_ROOT/templates_for_script/compose" > "$COMPOSE_FILE"
+envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
+  < "$REPO_ROOT/templates_for_script/client" > "$E2E_DIR/client.yaml"
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj '/CN=localhost' \
@@ -54,12 +56,15 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$E2E_DIR/hysteria/acme/server.key" \
   -out "$E2E_DIR/hysteria/acme/server.crt" >/dev/null 2>&1
 
-python3 - "$E2E_DIR/hysteria/config.yaml" "$SERVER_PORT" <<'PY'
+python3 - \
+  "$E2E_DIR/hysteria/config.yaml" \
+  "$E2E_DIR/client.yaml" \
+  "$SERVER_PORT" <<'PY'
 import sys
 import yaml
 
-path, port = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as stream:
+server_path, client_path, port = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(server_path, encoding="utf-8") as stream:
     config = yaml.safe_load(stream)
 
 config["listen"] = f":{port}"
@@ -70,17 +75,18 @@ config["tls"] = {
 }
 config["masquerade"]["listenHTTPS"] = f":{port}"
 
-with open(path, "w", encoding="utf-8") as stream:
+with open(server_path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(config, stream, sort_keys=False)
-PY
 
-cat > "$E2E_DIR/client.yaml" <<EOF
-server: 127.0.0.1:$SERVER_PORT
-auth: $HYSTERIA_PASSWORD
-tls:
-  sni: localhost
-  insecure: true
-EOF
+with open(client_path, encoding="utf-8") as stream:
+    client = yaml.safe_load(stream)
+
+client["server"] = f"127.0.0.1:{port}"
+client["tls"]["insecure"] = True
+
+with open(client_path, "w", encoding="utf-8") as stream:
+    yaml.safe_dump(client, stream, sort_keys=False)
+PY
 
 python3 -m http.server "$TARGET_PORT" --bind 127.0.0.1 \
   --directory "$E2E_DIR" >"$E2E_DIR/http-server.log" 2>&1 &
@@ -102,6 +108,16 @@ done
 
 if [[ "$ready" -ne 1 ]]; then
   echo "Hysteria server did not become ready" >&2
+  exit 1
+fi
+
+SHARE_URI="$(
+  docker run --rm \
+    -v "$E2E_DIR/client.yaml:/etc/hysteria/client.yaml:ro" \
+    "$HYSTERIA_IMAGE" share -c /etc/hysteria/client.yaml
+)"
+if [[ "$SHARE_URI" != hysteria2://* || "$SHARE_URI" == *[[:space:]]* ]]; then
+  echo "Hysteria share returned an invalid URI" >&2
   exit 1
 fi
 

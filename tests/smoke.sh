@@ -25,6 +25,8 @@ envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
   < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
 envsubst '${HYSTERIA_IMAGE}' \
   < templates_for_script/compose > "$TMP_DIR/docker-compose.yml"
+envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
+  < templates_for_script/client > "$TMP_DIR/client.yaml"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -38,7 +40,10 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 if [[ -n "$PYTHON_BIN" ]]; then
-  "$PYTHON_BIN" - "$TMP_DIR/config.yaml" "$TMP_DIR/docker-compose.yml" <<'PY'
+  "$PYTHON_BIN" - \
+    "$TMP_DIR/config.yaml" \
+    "$TMP_DIR/docker-compose.yml" \
+    "$TMP_DIR/client.yaml" <<'PY'
 import sys
 import yaml
 
@@ -46,6 +51,8 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     hysteria = yaml.safe_load(stream)
 with open(sys.argv[2], encoding="utf-8") as stream:
     compose = yaml.safe_load(stream)
+with open(sys.argv[3], encoding="utf-8") as stream:
+    client = yaml.safe_load(stream)
 
 assert hysteria["listen"] == ":443"
 assert hysteria["acme"]["type"] == "http"
@@ -63,13 +70,21 @@ services = compose["services"]
 assert set(services) == {"hysteria"}
 assert services["hysteria"]["image"] == "tobyxdd/hysteria:v2"
 assert services["hysteria"]["network_mode"] == "host"
+
+assert client == {
+    "server": "example.com:443",
+    "auth": "safe_password-123",
+    "tls": {"sni": "example.com"},
+}
 PY
 elif [[ -n "${YQ_BIN:-}" && -x "$YQ_BIN" ]]; then
   "$YQ_BIN" eval '.' "$TMP_DIR/config.yaml" >/dev/null
   "$YQ_BIN" eval '.' "$TMP_DIR/docker-compose.yml" >/dev/null
+  "$YQ_BIN" eval '.' "$TMP_DIR/client.yaml" >/dev/null
 elif command -v yq >/dev/null 2>&1; then
   yq eval '.' "$TMP_DIR/config.yaml" >/dev/null
   yq eval '.' "$TMP_DIR/docker-compose.yml" >/dev/null
+  yq eval '.' "$TMP_DIR/client.yaml" >/dev/null
 else
   echo "python with PyYAML and yq are missing; skipping YAML parse smoke"
 fi
@@ -105,8 +120,9 @@ grep -Fq '443/udp is publicly listening for Hysteria 2' scripts/diagnose.sh
 grep -Fq '443/tcp is publicly listening for HTTPS masquerade' scripts/diagnose.sh
 
 grep -Fq 'HYSTERIA_IMAGE="tobyxdd/hysteria:v2"' vps-setup.sh
-grep -Fq 'hysteria2://${HYSTERIA_PASSWORD}@${HYSTERIA_DOMAIN}:443/' vps-setup.sh
 grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_EMAIL} \${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq 'share -c /etc/hysteria/client.yaml' vps-setup.sh
 grep -Fq 'docker exec hysteria hysteria version' vps-setup.sh
 grep -Fq 'docker exec hysteria hysteria version' scripts/diagnose.sh
 if grep -R -Fq 'docker exec hysteria version' vps-setup.sh scripts/diagnose.sh; then

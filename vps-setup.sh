@@ -5,6 +5,7 @@ set -euo pipefail
 SSH_KEY_TEST_FILE=""
 DOCKER_INSTALLER_FILE=""
 RENDER_TMP_FILE=""
+CLIENT_URI=""
 
 cleanup() {
   if [[ -n "$SSH_KEY_TEST_FILE" ]]; then
@@ -24,6 +25,7 @@ trap 'echo "Error on line $LINENO. Exit code: $?" >&2' ERR
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/hysteria-vps-setup"
 STATE_DIR="/var/lib/hysteria-vps-setup"
+CLIENT_CONFIG="$STATE_DIR/client.yaml"
 BACKUP_ROOT="/var/backups/hysteria-vps-setup"
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
 HYSTERIA_IMAGE="tobyxdd/hysteria:v2"
@@ -59,7 +61,7 @@ check_platform() {
 
 check_repository_files() {
   local file
-  for file in compose hysteria; do
+  for file in client compose hysteria; do
     [[ -f "$SCRIPT_DIR/templates_for_script/$file" ]] || die "Missing required template: $file"
   done
   for file in firewall.sh optimize.sh; do
@@ -193,17 +195,17 @@ generate_credentials() {
     done
     export SSH_USER
   fi
-
-  CLIENT_URI="hysteria2://${HYSTERIA_PASSWORD}@${HYSTERIA_DOMAIN}:443/?sni=${HYSTERIA_DOMAIN}#${HYSTERIA_DOMAIN}"
 }
 
 render_configs() {
   backup_path "$INSTALL_DIR/docker-compose.yml"
   backup_path "$INSTALL_DIR/hysteria/config.yaml"
   backup_path "$INSTALL_DIR/hysteria/acme"
+  backup_path "$CLIENT_CONFIG"
 
   install -d -m 0755 "$INSTALL_DIR" "$INSTALL_DIR/hysteria"
   install -d -m 0700 "$INSTALL_DIR/hysteria/acme"
+  install -d -m 0700 "$STATE_DIR"
 
   RENDER_TMP_FILE="$(mktemp "$INSTALL_DIR/.compose.XXXXXX")"
   # shellcheck disable=SC2016 # envsubst needs literal variable names.
@@ -216,6 +218,13 @@ render_configs() {
   envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
     < "$SCRIPT_DIR/templates_for_script/hysteria" > "$RENDER_TMP_FILE"
   install -m 0600 "$RENDER_TMP_FILE" "$INSTALL_DIR/hysteria/config.yaml"
+  rm -f -- "$RENDER_TMP_FILE"
+
+  RENDER_TMP_FILE="$(mktemp "$STATE_DIR/.client.XXXXXX")"
+  # shellcheck disable=SC2016 # envsubst needs literal variable names.
+  envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
+    < "$SCRIPT_DIR/templates_for_script/client" > "$RENDER_TMP_FILE"
+  install -m 0600 "$RENDER_TMP_FILE" "$CLIENT_CONFIG"
   rm -f -- "$RENDER_TMP_FILE"
 
   RENDER_TMP_FILE=""
@@ -367,6 +376,21 @@ start_services() {
   die "Containers did not become healthy enough to remain running"
 }
 
+generate_client_uri() {
+  info "Generating client URI with Hysteria..."
+  if ! CLIENT_URI="$(
+    docker run --rm \
+      --add-host "$HYSTERIA_DOMAIN:127.0.0.1" \
+      -v "$CLIENT_CONFIG:/etc/hysteria/client.yaml:ro" \
+      "$HYSTERIA_IMAGE" share -c /etc/hysteria/client.yaml
+  )"; then
+    die "Hysteria could not generate the client URI"
+  fi
+  if [[ "$CLIENT_URI" != hysteria2://* || "$CLIENT_URI" == *[[:space:]]* ]]; then
+    die "Hysteria returned an invalid client URI"
+  fi
+}
+
 write_install_state() {
   local install_state_ssh_user=""
 
@@ -407,7 +431,8 @@ print_result() {
   echo
   printf '%s\n' "$CLIENT_URI"
   echo
-  printf 'The client URI is also stored in %s/client.uri (mode 0600).\n' "$STATE_DIR"
+  printf 'Client YAML: %s (mode 0600)\n' "$CLIENT_CONFIG"
+  printf 'Client URI: %s/client.uri (mode 0600)\n' "$STATE_DIR"
 }
 
 main() {
@@ -426,6 +451,7 @@ main() {
   configure_security
   apply_performance_profile
   start_services
+  generate_client_uri
   write_install_state
   print_result
 }

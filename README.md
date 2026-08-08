@@ -4,13 +4,13 @@
 
 Интерактивный установщик Hysteria 2 для VPS. Разворачивает сервер в Docker,
 настраивает автоматическое получение TLS-сертификата, встроенную
-HTTP/HTTPS-маскировку и выводит готовый URI для подключения клиента.
+HTTP/HTTPS-маскировку и создает готовые YAML и URI для подключения клиента.
 
 ## Возможности
 
 - установка Docker Engine и Compose plugin при необходимости;
 - получение TLS-сертификата через ACME HTTP-01;
-- криптографически стойкий пароль и готовый `hysteria2://` URI;
+- криптографически стойкий пароль, клиентский YAML и штатный `hysteria2://` URI;
 - встроенная HTTP/HTTPS-маскировка Hysteria 2;
 - опциональная настройка SSH и nftables с автоматическим откатом;
 - рекомендуемые Hysteria 2 размеры UDP-буферов;
@@ -51,7 +51,8 @@ sudo bash vps-setup.sh
 3. параметры усиления безопасности;
 4. применение UDP-профиля производительности.
 
-После завершения скопируйте выведенный URI в клиент Hysteria 2.
+После завершения импортируйте выведенный URI в клиент Hysteria 2 либо
+используйте сохраненный клиентский YAML.
 
 ## Что делает установщик
 
@@ -107,10 +108,13 @@ net.core.wmem_max = 16777216
 
 ## Результат установки
 
-URI клиента выводится в терминал и сохраняется с правами `0600`:
+Установщик создает клиентский YAML и передает его штатной команде
+`hysteria share`, которая формирует URI. Оба файла сохраняются с правами `0600`,
+а URI также выводится в терминал:
 
 ```text
-hysteria2://PASSWORD@example.com:443/?sni=example.com#example.com
+hysteria2://PASSWORD@example.com:443/?sni=example.com
+/var/lib/hysteria-vps-setup/client.yaml
 /var/lib/hysteria-vps-setup/client.uri
 ```
 
@@ -126,6 +130,8 @@ hysteria2://PASSWORD@example.com:443/?sni=example.com#example.com
 
 ```text
 /var/lib/hysteria-vps-setup/install.env
+/var/lib/hysteria-vps-setup/client.yaml
+/var/lib/hysteria-vps-setup/client.uri
 /var/lib/hysteria-vps-setup/firewall.state
 /var/lib/hysteria-vps-setup/optimize.state
 /etc/hysteria-vps-setup/firewall.nft

@@ -6,6 +6,7 @@ INSTALL_DIR="${HVS_INSTALL_DIR:-/opt/hysteria-vps-setup}"
 STATE_DIR="${HVS_STATE_DIR:-/var/lib/hysteria-vps-setup}"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 HYSTERIA_CONFIG="$INSTALL_DIR/hysteria/config.yaml"
+CLIENT_CONFIG="$STATE_DIR/client.yaml"
 FIREWALL_TABLE="${HVS_FIREWALL_TABLE:-hysteria_vps_filter}"
 OPTIMIZE_STATE="$STATE_DIR/optimize.state"
 INSTALL_STATE="$STATE_DIR/install.env"
@@ -115,6 +116,8 @@ port_has_non_loopback_listener() {
 }
 
 check_files() {
+  local mode
+
   [[ "$JSON" == "0" ]] && echo "Files"
   if [[ -d "$INSTALL_DIR" ]]; then
     status_line OK "install dir exists: $INSTALL_DIR"
@@ -132,13 +135,23 @@ check_files() {
     status_line FAIL "Hysteria config missing: $HYSTERIA_CONFIG"
   fi
   if [[ -f "$HYSTERIA_CONFIG" ]]; then
-    local mode
     mode="$(stat -c '%a' "$HYSTERIA_CONFIG" 2>/dev/null || true)"
     if [[ "$mode" == "600" ]]; then
       status_line OK "Hysteria config mode is 0600"
     else
       status_line WARN "Hysteria config mode is $mode, expected 600"
     fi
+  fi
+  if [[ -f "$CLIENT_CONFIG" ]]; then
+    status_line OK "Client config exists"
+    mode="$(stat -c '%a' "$CLIENT_CONFIG" 2>/dev/null || true)"
+    if [[ "$mode" == "600" ]]; then
+      status_line OK "Client config mode is 0600"
+    else
+      status_line WARN "Client config mode is $mode, expected 600"
+    fi
+  else
+    status_line FAIL "Client config missing: $CLIENT_CONFIG"
   fi
 }
 
@@ -316,6 +329,7 @@ emit_json() {
   printf '"hysteria_version":"%s",' "$(json_escape "$version")"
   printf '"compose_file":%s,' "$(bool_command test -f "$COMPOSE_FILE")"
   printf '"hysteria_config":%s,' "$(bool_command test -f "$HYSTERIA_CONFIG")"
+  printf '"client_config":%s,' "$(bool_command test -f "$CLIENT_CONFIG")"
   printf '"hysteria_running":%s,' "$(bool_command container_running hysteria)"
   printf '"udp_443_public":%s,' "$(bool_command port_has_non_loopback_listener udp 443)"
   printf '"tcp_443_public":%s,' "$(bool_command port_has_non_loopback_listener tcp 443)"

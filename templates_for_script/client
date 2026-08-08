@@ -1,0 +1,4 @@
+server: "${HYSTERIA_DOMAIN}:443"
+auth: "${HYSTERIA_PASSWORD}"
+tls:
+  sni: "${HYSTERIA_DOMAIN}"

@@ -1,0 +1,31 @@
+name: hysteria-v2-e2e
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hysteria-v2-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gettext-base python3-yaml
+
+      - name: Test latest Hysteria v2 image end to end
+        run: bash tests/hysteria-v2-e2e.sh

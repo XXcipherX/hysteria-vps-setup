@@ -2,12 +2,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TABLE_NAME="hysteria_vps_filter"
 CONF_DIR="${HVS_CONF_DIR:-/etc/hysteria-vps-setup}"
 STATE_DIR="${HVS_STATE_DIR:-/var/lib/hysteria-vps-setup}"
 NFT_FILE="$CONF_DIR/firewall.nft"
 SERVICE_FILE="/etc/systemd/system/hysteria-vps-firewall.service"
 SAFETY_UNIT="hysteria-vps-fw-safety"
+BLOCKLIST_FILE="${HVS_BLOCKLIST_FILE:-$SCRIPT_DIR/../lists/cyberok-skipa-v4.txt}"
+SCANNER_LOG_TAG="[scanners-activity]"
 
 read_state_value() {
   local file="$1" key="$2"
@@ -47,6 +50,11 @@ ICMP_BURST="${HVS_ICMP_BURST:-20}"
 ICMP_TIMEOUT="${HVS_ICMP_TIMEOUT:-1h}"
 SSH_TIMEOUT="${HVS_SSH_TIMEOUT:-24h}"
 SVC_TIMEOUT="${HVS_SVC_TIMEOUT:-24h}"
+SCANNER_LOG_RATE="${HVS_SCANNER_LOG_RATE:-3}"
+SCANNER_LOG_BURST="${HVS_SCANNER_LOG_BURST:-5}"
+SCANNER_LOG_GLOBAL_RATE="${HVS_SCANNER_LOG_GLOBAL_RATE:-30}"
+SCANNER_LOG_GLOBAL_BURST="${HVS_SCANNER_LOG_GLOBAL_BURST:-50}"
+SCANNER_LOG_TIMEOUT="${HVS_SCANNER_LOG_TIMEOUT:-1h}"
 SAFETY_DELAY="${HVS_SAFETY_DELAY:-300}"
 DRY_RUN="${HVS_DRY_RUN:-0}"
 ASSUME_FIREWALL_OK="${HVS_ASSUME_FIREWALL_OK:-0}"
@@ -101,10 +109,10 @@ validate_settings() {
   is_port "$SSH_PORT" || die "SSH_PORT is invalid: $SSH_PORT"
   validate_port_list "$TCP_PORTS" HVS_TCP_PORTS
   validate_port_list "$UDP_PORTS" HVS_UDP_PORTS
-  for value_name in SYN_RATE SYN_BURST SSH_RATE SSH_BURST ICMP_RATE ICMP_BURST SAFETY_DELAY; do
+  for value_name in SYN_RATE SYN_BURST SSH_RATE SSH_BURST ICMP_RATE ICMP_BURST SCANNER_LOG_RATE SCANNER_LOG_BURST SCANNER_LOG_GLOBAL_RATE SCANNER_LOG_GLOBAL_BURST SAFETY_DELAY; do
     is_positive_uint "${!value_name}" || die "$value_name must be a positive integer"
   done
-  for value_name in ICMP_TIMEOUT SSH_TIMEOUT SVC_TIMEOUT; do
+  for value_name in ICMP_TIMEOUT SSH_TIMEOUT SVC_TIMEOUT SCANNER_LOG_TIMEOUT; do
     is_timeout "${!value_name}" || die "$value_name must use nft timeout format like 30s, 1h, or 1d"
   done
   [[ "$DRY_RUN" =~ ^[01]$ ]] || die "HVS_DRY_RUN must be 0 or 1"
@@ -151,6 +159,34 @@ collect_whitelist() {
   fi
 }
 
+append_blocklist_item() {
+  local item="$1"
+  [[ "$item" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] \
+    || die "Invalid IPv4/CIDR blocklist item: $item"
+  BL4+=("$item")
+}
+
+collect_blocklist() {
+  local line
+  BL4=()
+  [[ -f "$BLOCKLIST_FILE" && ! -L "$BLOCKLIST_FILE" && -r "$BLOCKLIST_FILE" ]] \
+    || die "Blocklist file is missing, unreadable, or a symlink: $BLOCKLIST_FILE"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line//$'\r'/}"
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] || continue
+    [[ "$line" != *[[:space:]]* ]] \
+      || die "Blocklist entries must contain one IPv4/CIDR per line: $line"
+    append_blocklist_item "$line"
+  done < "$BLOCKLIST_FILE"
+
+  ((${#BL4[@]} > 0)) \
+    || die "Blocklist file contains no IPv4/CIDR entries: $BLOCKLIST_FILE"
+}
+
 join_by_comma() {
   local item out=""
   for item in "$@"; do
@@ -181,11 +217,12 @@ ensure_ruleset_dir() {
 
 generate_ruleset() {
   local ruleset_dir ruleset_file="${1:-$NFT_FILE}" table_name="${2:-$TABLE_NAME}"
-  local tcp_ports udp_ports wl4 wl6
+  local tcp_ports udp_ports wl4 wl6 bl4
   tcp_ports="$(format_ports_for_nft "$TCP_PORTS")"
   udp_ports="$(format_ports_for_nft "$UDP_PORTS")"
   wl4="$(join_by_comma "${WL4[@]}")"
   wl6="$(join_by_comma "${WL6[@]}")"
+  bl4="$(join_by_comma "${BL4[@]}")"
 
   ruleset_dir="$(dirname -- "$ruleset_file")"
   ensure_ruleset_dir "$ruleset_dir"
@@ -207,6 +244,13 @@ $(set_elements_block "$wl4")
 $(set_elements_block "$wl6")
     }
 
+    set scanner_blocklist_v4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+$(set_elements_block "$bl4")
+    }
+
     chain bad_tcp_flags {
         limit rate 5/second log prefix "[hysteria-vps badflags] " level info
         counter drop
@@ -216,6 +260,9 @@ $(set_elements_block "$wl6")
         type filter hook input priority filter; policy drop;
 
         iif lo accept
+        ip saddr @scanner_blocklist_v4 meter scanner_log4 { ip saddr timeout $SCANNER_LOG_TIMEOUT limit rate $SCANNER_LOG_RATE/minute burst $SCANNER_LOG_BURST packets } limit rate $SCANNER_LOG_GLOBAL_RATE/minute burst $SCANNER_LOG_GLOBAL_BURST packets log prefix "$SCANNER_LOG_TAG " level info
+        ip saddr @scanner_blocklist_v4 counter drop
+
         ct state established,related accept
         ct state invalid drop
 
@@ -252,6 +299,14 @@ $(set_elements_block "$wl6")
         udp dport { $udp_ports } accept
 
         counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
     }
 }
 EOF
@@ -380,6 +435,7 @@ apply_firewall() {
   require_root
   validate_settings
   collect_whitelist
+  collect_blocklist
   if [[ "$DRY_RUN" == "1" ]]; then
     command -v nft >/dev/null 2>&1 || die "nft command is required for dry-run validation"
   else
@@ -441,6 +497,13 @@ installed_at=$(date -Is)
 ssh_port=$SSH_PORT
 tcp_ports=$TCP_PORTS
 udp_ports=$UDP_PORTS
+blocklist_file=$BLOCKLIST_FILE
+blocklist_entries=${#BL4[@]}
+scanner_log_rate=$SCANNER_LOG_RATE
+scanner_log_burst=$SCANNER_LOG_BURST
+scanner_log_global_rate=$SCANNER_LOG_GLOBAL_RATE
+scanner_log_global_burst=$SCANNER_LOG_GLOBAL_BURST
+scanner_log_timeout=$SCANNER_LOG_TIMEOUT
 nft_file=$NFT_FILE
 service=hysteria-vps-firewall.service
 EOF
@@ -483,9 +546,77 @@ status_firewall() {
   fi
 }
 
+scanners_hits() {
+  local statuses
+  require_root
+  command -v nft >/dev/null 2>&1 \
+    || die "nft command is required to inspect scanner activity logging"
+  command -v journalctl >/dev/null 2>&1 \
+    || die "journalctl is required to show scanner activity"
+  command -v awk >/dev/null 2>&1 \
+    || die "awk is required to summarize scanner activity"
+  if ! nft list chain inet "$TABLE_NAME" input 2>/dev/null \
+    | grep -F "$SCANNER_LOG_TAG" >/dev/null; then
+    die "Scanner activity logging is not active; run firewall.sh apply first"
+  fi
+
+  if journalctl -k -b --no-pager -o short-iso 2>/dev/null | awk -v tag="$SCANNER_LOG_TAG" '
+    index($0, tag) {
+      found=1
+      raw_timestamp=$1
+      sub(/T/, " ", raw_timestamp)
+      sub(/[+-][0-9][0-9]:?[0-9][0-9]$/, "", raw_timestamp)
+      timestamp=raw_timestamp
+      source=protocol=dport="-"
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^SRC=/) source=substr($i, 5)
+        else if ($i ~ /^PROTO=/) protocol=substr($i, 7)
+        else if ($i ~ /^DPT=/) dport=substr($i, 5)
+      }
+      key = source SUBSEP protocol SUBSEP dport
+      if (!(source in source_seen)) {
+        source_seen[source]=1
+        sources[++source_count]=source
+      }
+      if (!(key in first_seen)) {
+        first_seen[key]=timestamp
+        keys[++key_count]=key
+      }
+      last_seen[key]=timestamp
+    }
+    END {
+      if (!found) exit 1
+      print "Logged scanner attempts (rate-limited):"
+      for (source_index=1; source_index<=source_count; source_index++) {
+        source=sources[source_index]
+        print "\nSOURCE: " source "\n"
+        printf "%-5s  %-5s  %-19s  %s\n", "PROTO", "PORT", "FIRST ATTEMPT", "LAST ATTEMPT"
+        printf "%-5s  %-5s  %-19s  %s\n", "-----", "-----", "-------------------", "-------------------"
+        for (key_index=1; key_index<=key_count; key_index++) {
+          key=keys[key_index]
+          split(key, fields, SUBSEP)
+          if (fields[1] == source) {
+            printf "%-5s  %-5s  %-19s  %s\n", fields[2], fields[3], first_seen[key], last_seen[key]
+          }
+        }
+      }
+    }
+  '; then
+    return 0
+  fi
+  statuses=("${PIPESTATUS[@]}")
+  ((statuses[0] == 0)) || die "Could not read the kernel journal"
+  if ((statuses[1] == 1)); then
+    info "No scanners-activity events logged since the current boot"
+  else
+    die "Could not filter scanner activity from the kernel journal"
+  fi
+}
+
 case "${1:-apply}" in
   apply) apply_firewall ;;
   delete) delete_firewall ;;
   status) status_firewall ;;
-  *) die "Usage: $0 [apply|delete|status]" ;;
+  scanners-hits) scanners_hits ;;
+  *) die "Usage: $0 [apply|delete|status|scanners-hits]" ;;
 esac

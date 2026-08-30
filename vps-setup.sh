@@ -67,6 +67,8 @@ check_repository_files() {
   for file in firewall.sh optimize.sh; do
     [[ -f "$SCRIPT_DIR/scripts/$file" ]] || die "Missing required script: $file"
   done
+  [[ -f "$SCRIPT_DIR/lists/cyberok-skipa-v4.txt" ]] \
+    || die "Missing required scanner blocklist: lists/cyberok-skipa-v4.txt"
 }
 
 confirm_reinstall() {
@@ -127,35 +129,36 @@ read_email() {
 }
 
 read_security_options() {
-  read -r -e -p "Configure server security? Do this on first run only. [y/N]: " configure_ssh_input
+  read -r -e -p "Configure SSH security? Do this on first run only. [y/N]: " configure_ssh_input
   if [[ ${configure_ssh_input,,} != "y" ]]; then
-    SSH_PORT=22
+    SSH_PORT=""
     SSH_USER=""
     export SSH_PORT SSH_USER
-    return 0
+  else
+    read -r -e -p "Enter SSH port (default 22; ports 80 and 443 are reserved): " input_ssh_port
+    input_ssh_port="${input_ssh_port:-22}"
+    while ! [[ "$input_ssh_port" =~ ^[0-9]+$ ]] \
+      || (( 10#$input_ssh_port < 1 || 10#$input_ssh_port > 65535 )) \
+      || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" ]]; do
+      read -r -e -p "Invalid or reserved port. Enter again: " input_ssh_port
+      input_ssh_port="${input_ssh_port:-22}"
+    done
+    SSH_PORT="$input_ssh_port"
+    export SSH_PORT
+
+    read -r -e -p "Enter SSH public key: " input_ssh_pbk
+    SSH_KEY_TEST_FILE="$(mktemp)"
+    printf '%s\n' "$input_ssh_pbk" > "$SSH_KEY_TEST_FILE"
+    while ! ssh-keygen -l -f "$SSH_KEY_TEST_FILE" >/dev/null 2>&1; do
+      warn "The public key is invalid. Paste a complete OpenSSH public key."
+      read -r -e -p "Enter SSH public key: " input_ssh_pbk
+      printf '%s\n' "$input_ssh_pbk" > "$SSH_KEY_TEST_FILE"
+    done
+    rm -f -- "$SSH_KEY_TEST_FILE"
+    SSH_KEY_TEST_FILE=""
   fi
 
-  read -r -e -p "Enter SSH port (default 22; ports 80 and 443 are reserved): " input_ssh_port
-  input_ssh_port="${input_ssh_port:-22}"
-  while ! [[ "$input_ssh_port" =~ ^[0-9]+$ ]] \
-    || (( 10#$input_ssh_port < 1 || 10#$input_ssh_port > 65535 )) \
-    || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" ]]; do
-    read -r -e -p "Invalid or reserved port. Enter again: " input_ssh_port
-    input_ssh_port="${input_ssh_port:-22}"
-  done
-  SSH_PORT="$input_ssh_port"
-  export SSH_PORT
-
-  read -r -e -p "Enter SSH public key: " input_ssh_pbk
-  SSH_KEY_TEST_FILE="$(mktemp)"
-  printf '%s\n' "$input_ssh_pbk" > "$SSH_KEY_TEST_FILE"
-  while ! ssh-keygen -l -f "$SSH_KEY_TEST_FILE" >/dev/null 2>&1; do
-    warn "The public key is invalid. Paste a complete OpenSSH public key."
-    read -r -e -p "Enter SSH public key: " input_ssh_pbk
-    printf '%s\n' "$input_ssh_pbk" > "$SSH_KEY_TEST_FILE"
-  done
-  rm -f -- "$SSH_KEY_TEST_FILE"
-  SSH_KEY_TEST_FILE=""
+  read -r -e -p "Apply the nftables firewall? [y/N]: " configure_firewall_input
 }
 
 read_performance_options() {
@@ -248,6 +251,43 @@ add_user() {
   passwd -l "$SSH_USER" >/dev/null 2>&1
 }
 
+ssh_port_is_listening() {
+  local port="$1"
+  ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+}
+
+restart_ssh_listener() {
+  local unit socket_unit=""
+
+  for unit in ssh.socket sshd.socket; do
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      socket_unit="$unit"
+      break
+    fi
+  done
+
+  if [[ -n "$socket_unit" ]]; then
+    systemctl daemon-reload
+    systemctl restart "$socket_unit"
+  else
+    systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
+  fi
+}
+
+wait_for_ssh_listener() {
+  local port="$1" attempt
+
+  for attempt in {1..10}; do
+    if ssh_port_is_listening "$port"; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  warn "SSH is not listening on configured port $port"
+  return 1
+}
+
 arm_ssh_safety() {
   local conf="/etc/ssh/sshd_config"
   local dropin_dir="/etc/ssh/sshd_config.d"
@@ -265,7 +305,21 @@ arm_ssh_safety() {
       else
         install -d -m 0755 "$3"
       fi
-      sshd -t && (systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service)
+      if sshd -t; then
+        socket_unit=""
+        for unit in ssh.socket sshd.socket; do
+          if systemctl is-active --quiet "$unit" 2>/dev/null; then
+            socket_unit="$unit"
+            break
+          fi
+        done
+        if [[ -n "$socket_unit" ]]; then
+          systemctl daemon-reload
+          systemctl restart "$socket_unit"
+        else
+          systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
+        fi
+      fi
     ' _ "$backup_conf" "$conf" "$dropin_dir" "$backup_dropin"
   info "SSH safety timer armed for ${SSH_SAFETY_DELAY}s"
 }
@@ -288,7 +342,7 @@ restore_ssh_config() {
     install -d -m 0755 "$dropin_dir"
   fi
   sshd -t || die "The backed-up SSH configuration is invalid"
-  systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
+  restart_ssh_listener
   warn "Previous SSH configuration restored"
 }
 
@@ -313,30 +367,53 @@ ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 EOF
 
-  sshd -t || die "sshd configuration validation failed"
-  systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service
+  if ! sshd -t; then
+    restore_ssh_config
+    disarm_ssh_safety
+    die "sshd configuration validation failed; previous configuration restored"
+  fi
+  if ! restart_ssh_listener || ! wait_for_ssh_listener "$SSH_PORT"; then
+    restore_ssh_config
+    disarm_ssh_safety
+    die "SSH listener validation failed"
+  fi
 }
 
-configure_security() {
-  local firewall_result
+configure_ssh() {
+  local answer
 
   [[ ${configure_ssh_input,,} == "y" ]] || return 0
   add_user
   sshd_edit
   ok "SSH hardened. New key-only user: $SSH_USER; port: $SSH_PORT"
-  if SSH_PORT="$SSH_PORT" HVS_TCP_PORTS="80,443" HVS_UDP_PORTS="443" \
-    bash "$SCRIPT_DIR/scripts/firewall.sh" apply; then
-    firewall_result=0
+
+  echo "Open a new SSH session now and verify key-only access before confirming."
+  read -r -p "Is the new SSH access working? [y/N]: " answer
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    disarm_ssh_safety
+    ok "SSH changes confirmed; safety timer disarmed"
   else
-    firewall_result=$?
-  fi
-  if [[ "$firewall_result" -ne 0 ]]; then
     restore_ssh_config
     disarm_ssh_safety
-    return "$firewall_result"
+    die "SSH changes were not confirmed; previous configuration restored"
   fi
-  disarm_ssh_safety
-  ok "SSH and firewall changes confirmed; safety timers disarmed"
+}
+
+configure_firewall() {
+  [[ ${configure_firewall_input,,} == "y" ]] || return 0
+
+  if [[ -z "$SSH_PORT" ]]; then
+    SSH_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' | sort -un)"
+    if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || ! ssh_port_is_listening "$SSH_PORT"; then
+      die "Could not uniquely detect the listening SSH port; firewall was not changed"
+    fi
+    export SSH_PORT
+    info "Detected listening SSH port: $SSH_PORT"
+  fi
+
+  SSH_PORT="$SSH_PORT" HVS_TCP_PORTS="80,443" HVS_UDP_PORTS="443" \
+    bash "$SCRIPT_DIR/scripts/firewall.sh" apply
+  ok "Firewall setup completed"
 }
 
 apply_performance_profile() {
@@ -411,6 +488,7 @@ hysteria_image=$HYSTERIA_IMAGE
 ssh_user=$install_state_ssh_user
 ssh_port=$SSH_PORT
 security_configured=${configure_ssh_input,,}
+firewall_enabled=${configure_firewall_input,,}
 optimize_enabled=${configure_optimize_input,,}
 backup_dir=$BACKUP_DIR
 EOF
@@ -448,7 +526,8 @@ main() {
   ensure_docker
   generate_credentials
   render_configs
-  configure_security
+  configure_ssh
+  configure_firewall
   apply_performance_profile
   start_services
   generate_client_uri

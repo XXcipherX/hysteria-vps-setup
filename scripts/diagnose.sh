@@ -235,10 +235,14 @@ with open(sys.argv[2], encoding="utf-8") as stream:
 assert isinstance(server, dict)
 assert isinstance(client, dict)
 assert server.get("listen") == ":443"
-assert server.get("acme", {}).get("type") == "http"
+assert server.get("tls") == {
+    "cert": "/etc/hysteria/tls/cert.pem",
+    "key": "/etc/hysteria/tls/key.pem",
+}
+assert "acme" not in server
 assert server.get("auth", {}).get("type") == "password"
 assert server.get("auth", {}).get("password")
-assert server.get("masquerade", {}).get("listenHTTPS") == ":443"
+assert "masquerade" not in server
 assert client.get("auth") == server["auth"]["password"]
 assert client.get("server", "").endswith(":443")
 assert client.get("tls", {}).get("sni")
@@ -271,7 +275,7 @@ check_ports() {
   fi
 
   if port_has_non_loopback_listener tcp 443; then
-    status_line OK "443/tcp is publicly listening for HTTPS masquerade"
+    status_line OK "443/tcp is publicly listening for MTProto"
   elif port_listening tcp 443; then
     status_line FAIL "443/tcp is loopback-only"
   else
@@ -279,11 +283,11 @@ check_ports() {
   fi
 
   if port_has_non_loopback_listener tcp 80; then
-    status_line INFO "80/tcp currently has a public ACME listener"
+    status_line OK "80/tcp is publicly listening for MTProto Caddy ACME"
   elif port_listening tcp 80; then
     status_line WARN "80/tcp is listening only on loopback"
   else
-    status_line INFO "80/tcp is idle; Hysteria opens it when HTTP-01 validation needs it"
+    status_line WARN "80/tcp is not listening; MTProto Caddy certificate renewal may fail"
   fi
 }
 

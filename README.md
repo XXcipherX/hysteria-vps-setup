@@ -2,16 +2,16 @@
 
 [![CI](https://github.com/XXcipherX/hysteria-vps-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/XXcipherX/hysteria-vps-setup/actions/workflows/ci.yml)
 
-Интерактивный установщик Hysteria 2 для VPS. Разворачивает сервер в Docker,
-настраивает автоматическое получение TLS-сертификата, встроенную
-HTTP/HTTPS-маскировку и создает готовые YAML и URI для подключения клиента.
+Интерактивный установщик Hysteria 2 для VPS с уже установленными Docker-версиями
+`mtproto.zig` и WDTT. Hysteria использует `443/udp`, общий сертификат MTProto
+Caddy и создает готовые YAML и URI для подключения клиента.
 
 ## Возможности
 
 - установка Docker Engine и Compose plugin при необходимости;
-- получение TLS-сертификата через ACME HTTP-01;
+- использование и автоматическое обновление сертификата существующего MTProto Caddy;
 - криптографически стойкий пароль, клиентский YAML и штатный `hysteria2://` URI;
-- встроенная HTTP/HTTPS-маскировка Hysteria 2;
+- совместная работа MTProto на `443/tcp`, Hysteria на `443/udp` и WDTT на `56000/udp`;
 - независимые опциональные шаги SSH hardening и nftables с автоматическим откатом;
 - локальный список известных адресов сканирования с ограниченным логированием;
 - профиль UDP/QUIC согласно специфике Hysteria 2;
@@ -26,13 +26,15 @@ HTTP/HTTPS-маскировку и создает готовые YAML и URI д�
 - права `root` или возможность использовать `sudo`;
 - публичный IPv4 и/или IPv6;
 - домен с A и/или AAAA-записью, направленной на VPS;
+- запущенные контейнеры `mtproto-proxy` и `mtproto-mask-caddy`;
 - доступные входящие порты:
 
   | Порт | Назначение |
   | --- | --- |
-  | `80/tcp` | ACME HTTP-01 |
-  | `443/tcp` | HTTPS-маскировка |
+  | `80/tcp` | ACME HTTP-01 существующего MTProto Caddy |
+  | `443/tcp` | MTProto/FakeTLS |
   | `443/udp` | Hysteria 2 |
+  | `56000/udp` | WDTT |
   | SSH-порт | Администрирование сервера |
 
 Если провайдер использует отдельный firewall или security group, откройте эти
@@ -41,18 +43,18 @@ HTTP/HTTPS-маскировку и создает готовые YAML и URI д�
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/XXcipherX/hysteria-vps-setup.git
+git clone --branch feat/mtproto-wdtt-compat --single-branch \
+  https://github.com/XXcipherX/hysteria-vps-setup.git
 cd hysteria-vps-setup
 sudo bash vps-setup.sh
 ```
 
 Установщик запросит:
 
-1. домен сервера;
-2. email для ACME-аккаунта Let's Encrypt;
-3. настройку SSH security;
-4. отдельное применение nftables firewall;
-5. применение UDP/QUIC-профиля производительности.
+1. домен из `[censorship].tls_domain` установленного MTProto;
+2. настройку SSH security;
+3. отдельное применение nftables firewall;
+4. применение UDP/QUIC-профиля производительности.
 
 После завершения импортируйте выведенный URI в клиент Hysteria 2 либо
 используйте сохраненный клиентский YAML.
@@ -67,11 +69,12 @@ host network:
 
 | Контейнер | Образ | Назначение |
 | --- | --- | --- |
-| `hysteria` | `tobyxdd/hysteria:v2` | Hysteria 2, ACME и HTTPS-маскировка |
+| `hysteria` | `tobyxdd/hysteria:v2` | Hysteria 2 на `443/udp` |
 
-Hysteria слушает `443/udp` и `443/tcp`. Запросы, не прошедшие
-Hysteria-аутентификацию, обрабатываются встроенной маскировкой и получают
-обычный HTTP-ответ `404`.
+Hysteria слушает только `443/udp`. `443/tcp`, `80/tcp`, TLS-сертификат и
+маскировку обслуживает существующий MTProto Caddy. По умолчанию сертификат
+монтируется read-only из
+`/opt/mtproto-proxy/caddy/ssl/mtproto-mask/<домен>`.
 
 ### Настройка SSH
 
@@ -102,15 +105,18 @@ hardening установщик:
 
 Firewall создаёт только отдельную таблицу `inet hysteria_vps_filter`, не
 очищая чужие правила nftables. Он разрешает loopback, established/related,
-текущий SSH client IP, выбранный SSH-порт, `80/tcp`, `443/tcp`, `443/udp` и
+текущий SSH client IP, выбранный SSH-порт, `80/tcp`, `443/tcp`, `443/udp`,
+`56000/udp` и
 необходимый ICMP/ICMPv6. Для SSH и новых TCP-соединений действуют per-IP rate
-limits. Входящий и пересылаемый трафик по умолчанию блокируется, исходящий —
-разрешён.
+limits. Входящий трафик по умолчанию блокируется, исходящий — разрешён. Цепочка
+`forward` не создаётся, чтобы маршрутизацией и NAT интерфейса `wdtt0` управлял
+только WDTT.
 
 Перед применением сохраняется предыдущая таблица и вооружается safety timer.
 Нужно проверить новую SSH-сессию и подтвердить доступ. При отказе старая таблица
 восстанавливается; при неинтерактивном запуске таймер остаётся активен, если не
-задано `HVS_ASSUME_FIREWALL_OK=1`.
+задано `HVS_ASSUME_FIREWALL_OK=1`. После подтверждения установщик сразу запускает
+и включает `hysteria-vps-firewall.service` для последующих загрузок системы.
 
 Встроенный файл `lists/cyberok-skipa-v4.txt` содержит зафиксированный список
 IPv4/CIDR известных сканирующих узлов. Он основан на снимке
@@ -166,7 +172,7 @@ hysteria2://PASSWORD@example.com:443/?sni=example.com
 ```text
 /opt/hysteria-vps-setup/docker-compose.yml
 /opt/hysteria-vps-setup/hysteria/config.yaml
-/opt/hysteria-vps-setup/hysteria/acme/
+/opt/mtproto-proxy/caddy/ssl/mtproto-mask/<домен>/
 ```
 
 Служебные файлы:
@@ -235,7 +241,7 @@ sudo HVS_DRY_RUN=1 SSH_PORT=2222 \
 | --- | --- | --- |
 | `SSH_PORT` | сохраненный порт или `22` | Разрешенный SSH-порт |
 | `HVS_TCP_PORTS` | `80,443` | Публичные TCP-порты |
-| `HVS_UDP_PORTS` | `443` | Публичные UDP-порты |
+| `HVS_UDP_PORTS` | `443,56000` | Публичные UDP-порты Hysteria и WDTT |
 | `HVS_WHITELIST` | пусто | IPv4, IPv6 или CIDR через запятую |
 | `HVS_BLOCKLIST_FILE` | `lists/cyberok-skipa-v4.txt` | Локальный IPv4/CIDR blocklist |
 | `HVS_SCANNER_LOG_RATE` | `3` | Записей в минуту для каждого IP после burst |
@@ -341,7 +347,7 @@ bash tests/smoke.sh
 GitHub Actions также проверяет Bash-синтаксис, запускает ShellCheck, рендерит и
 разбирает YAML-шаблоны, выполняет smoke-тесты и валидирует сгенерированные
 правила через `nft -c`. Отдельная еженедельная проверка загружает актуальный
-образ `tobyxdd/hysteria:v2` и проверяет реальное подключение к тестовому серверу.
+образ `tobyxdd/hysteria:v2` и проверяет конфигурацию с внешним TLS-сертификатом.
 
 ## Документация
 

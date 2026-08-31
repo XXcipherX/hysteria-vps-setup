@@ -29,6 +29,9 @@ CLIENT_CONFIG="$STATE_DIR/client.yaml"
 BACKUP_ROOT="/var/backups/hysteria-vps-setup"
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
 HYSTERIA_IMAGE="tobyxdd/hysteria:v2"
+MTPROTO_DIR="${HVS_MTPROTO_DIR:-/opt/mtproto-proxy}"
+WDTT_PORT="${HVS_WDTT_PORT:-56000}"
+HYSTERIA_CERT_DIR=""
 SSH_SAFETY_UNIT="hysteria-vps-ssh-safety"
 SSH_SAFETY_DELAY="${HVS_SAFETY_DELAY:-300}"
 export DEBIAN_FRONTEND=noninteractive
@@ -90,9 +93,9 @@ install_dependencies() {
 read_domain() {
   local input_domain converted_domain dns_records answer
 
-  read -r -e -p "Enter your domain: " input_domain
+  read -r -e -p "Enter the existing MTProto TLS domain: " input_domain
   while [[ -z "$input_domain" ]]; do
-    read -r -e -p "Domain cannot be empty. Enter your domain: " input_domain
+    read -r -e -p "Domain cannot be empty. Enter the MTProto TLS domain: " input_domain
   done
   input_domain="${input_domain%.}"
 
@@ -118,14 +121,18 @@ read_domain() {
   fi
 }
 
-read_email() {
-  local input_email
-  read -r -e -p "Enter your ACME email: " input_email
-  while ! [[ "$input_email" =~ ^[^[:space:]@:#]+@[^[:space:]@:#]+\.[^[:space:]@:#]+$ ]]; do
-    read -r -e -p "Invalid email. Enter your ACME email: " input_email
-  done
-  HYSTERIA_EMAIL="$input_email"
-  export HYSTERIA_EMAIL
+prepare_shared_certificate() {
+  HYSTERIA_CERT_DIR="${HVS_MTPROTO_CERT_DIR:-$MTPROTO_DIR/caddy/ssl/mtproto-mask/$HYSTERIA_DOMAIN}"
+  [[ "$HYSTERIA_CERT_DIR" == /* ]] || die "MTProto certificate directory must be absolute"
+  [[ -r "$HYSTERIA_CERT_DIR/cert.pem" ]] \
+    || die "MTProto certificate is missing: $HYSTERIA_CERT_DIR/cert.pem"
+  [[ -r "$HYSTERIA_CERT_DIR/key.pem" ]] \
+    || die "MTProto private key is missing: $HYSTERIA_CERT_DIR/key.pem"
+  openssl x509 -in "$HYSTERIA_CERT_DIR/cert.pem" -noout -checkhost "$HYSTERIA_DOMAIN" >/dev/null 2>&1 \
+    || die "MTProto certificate does not cover $HYSTERIA_DOMAIN"
+  openssl pkey -in "$HYSTERIA_CERT_DIR/key.pem" -noout >/dev/null 2>&1 \
+    || die "MTProto private key is invalid"
+  export HYSTERIA_CERT_DIR
 }
 
 read_security_options() {
@@ -203,23 +210,21 @@ generate_credentials() {
 render_configs() {
   backup_path "$INSTALL_DIR/docker-compose.yml"
   backup_path "$INSTALL_DIR/hysteria/config.yaml"
-  backup_path "$INSTALL_DIR/hysteria/acme"
   backup_path "$CLIENT_CONFIG"
 
   install -d -m 0755 "$INSTALL_DIR" "$INSTALL_DIR/hysteria"
-  install -d -m 0700 "$INSTALL_DIR/hysteria/acme"
   install -d -m 0700 "$STATE_DIR"
 
   RENDER_TMP_FILE="$(mktemp "$INSTALL_DIR/.compose.XXXXXX")"
   # shellcheck disable=SC2016 # envsubst needs literal variable names.
-  envsubst '${HYSTERIA_IMAGE}' < "$SCRIPT_DIR/templates_for_script/compose" > "$RENDER_TMP_FILE"
+  envsubst '${HYSTERIA_IMAGE} ${HYSTERIA_CERT_DIR}' \
+    < "$SCRIPT_DIR/templates_for_script/compose" > "$RENDER_TMP_FILE"
   install -m 0644 "$RENDER_TMP_FILE" "$INSTALL_DIR/docker-compose.yml"
   rm -f -- "$RENDER_TMP_FILE"
 
   RENDER_TMP_FILE="$(mktemp "$INSTALL_DIR/.hysteria.XXXXXX")"
   # shellcheck disable=SC2016 # envsubst needs literal variable names.
-  envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
-    < "$SCRIPT_DIR/templates_for_script/hysteria" > "$RENDER_TMP_FILE"
+  envsubst '${HYSTERIA_PASSWORD}' < "$SCRIPT_DIR/templates_for_script/hysteria" > "$RENDER_TMP_FILE"
   install -m 0600 "$RENDER_TMP_FILE" "$INSTALL_DIR/hysteria/config.yaml"
   rm -f -- "$RENDER_TMP_FILE"
 
@@ -411,7 +416,7 @@ configure_firewall() {
     info "Detected listening SSH port: $SSH_PORT"
   fi
 
-  SSH_PORT="$SSH_PORT" HVS_TCP_PORTS="80,443" HVS_UDP_PORTS="443" \
+  SSH_PORT="$SSH_PORT" HVS_TCP_PORTS="80,443" HVS_UDP_PORTS="443,$WDTT_PORT" \
     bash "$SCRIPT_DIR/scripts/firewall.sh" apply
   ok "Firewall setup completed"
 }
@@ -483,7 +488,6 @@ write_install_state() {
 installed_at=$(date -Is)
 install_dir=$INSTALL_DIR
 domain=$HYSTERIA_DOMAIN
-email=$HYSTERIA_EMAIL
 hysteria_image=$HYSTERIA_IMAGE
 ssh_user=$install_state_ssh_user
 ssh_port=$SSH_PORT
@@ -520,7 +524,7 @@ main() {
   confirm_reinstall
   install_dependencies
   read_domain
-  read_email
+  prepare_shared_certificate
   read_security_options
   read_performance_options
   ensure_docker

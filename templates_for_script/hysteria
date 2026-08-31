@@ -1,16 +1,9 @@
 listen: :443
 
-acme:
-  type: http
-  domains:
-    - ${HYSTERIA_DOMAIN}
-  email: ${HYSTERIA_EMAIL}
-  ca: letsencrypt
-  dir: /var/lib/hysteria/acme
+tls:
+  cert: /etc/hysteria/tls/cert.pem
+  key: /etc/hysteria/tls/key.pem
 
 auth:
   type: password
   password: ${HYSTERIA_PASSWORD}
-
-masquerade:
-  listenHTTPS: :443

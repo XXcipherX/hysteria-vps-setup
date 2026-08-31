@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [master]
+    branches: [master, feat/mtproto-wdtt-compat]
   pull_request:
 
 permissions:

@@ -25,13 +25,12 @@ if ! command -v envsubst >/dev/null 2>&1; then
 fi
 
 export HYSTERIA_DOMAIN="example.com"
-export HYSTERIA_EMAIL="admin@example.com"
 export HYSTERIA_PASSWORD="safe_password-123"
 export HYSTERIA_IMAGE="tobyxdd/hysteria:v2"
+export HYSTERIA_CERT_DIR="/opt/mtproto-proxy/caddy/ssl/mtproto-mask/example.com"
 
-envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
-  < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
-envsubst '${HYSTERIA_IMAGE}' \
+envsubst '${HYSTERIA_PASSWORD}' < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
+envsubst '${HYSTERIA_IMAGE} ${HYSTERIA_CERT_DIR}' \
   < templates_for_script/compose > "$TMP_DIR/docker-compose.yml"
 envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
   < templates_for_script/client > "$TMP_DIR/client.yaml"
@@ -63,21 +62,28 @@ with open(sys.argv[3], encoding="utf-8") as stream:
     client = yaml.safe_load(stream)
 
 assert hysteria["listen"] == ":443"
-assert hysteria["acme"]["type"] == "http"
-assert hysteria["acme"]["domains"] == ["example.com"]
-assert hysteria["acme"]["dir"] == "/var/lib/hysteria/acme"
+assert hysteria["tls"] == {
+    "cert": "/etc/hysteria/tls/cert.pem",
+    "key": "/etc/hysteria/tls/key.pem",
+}
+assert "acme" not in hysteria
 assert hysteria["auth"] == {
     "type": "password",
     "password": "safe_password-123",
 }
 assert "obfs" not in hysteria
-assert set(hysteria["masquerade"]) == {"listenHTTPS"}
-assert hysteria["masquerade"]["listenHTTPS"] == ":443"
+assert "masquerade" not in hysteria
 
 services = compose["services"]
 assert set(services) == {"hysteria"}
 assert services["hysteria"]["image"] == "tobyxdd/hysteria:v2"
 assert services["hysteria"]["network_mode"] == "host"
+assert services["hysteria"]["volumes"][1] == {
+    "type": "bind",
+    "source": "/opt/mtproto-proxy/caddy/ssl/mtproto-mask/example.com",
+    "target": "/etc/hysteria/tls",
+    "read_only": True,
+}
 
 assert client == {
     "server": "example.com:443",
@@ -104,10 +110,14 @@ fi
 grep -Fq 'TABLE_NAME="hysteria_vps_filter"' scripts/firewall.sh
 grep -Fq 'udp dport { $udp_ports } accept' scripts/firewall.sh
 grep -Fq 'TCP_PORTS="${HVS_TCP_PORTS:-80,443}"' scripts/firewall.sh
-grep -Fq 'UDP_PORTS="${HVS_UDP_PORTS:-443}"' scripts/firewall.sh
+grep -Fq 'UDP_PORTS="${HVS_UDP_PORTS:-443,56000}"' scripts/firewall.sh
 grep -Fq 'Saved current firewall rules for rollback' scripts/firewall.sh
 grep -Fq 'Safety timer armed' scripts/firewall.sh
-grep -Fq 'type filter hook forward priority filter; policy drop;' scripts/firewall.sh
+grep -Fq 'systemctl enable --now hysteria-vps-firewall.service' scripts/firewall.sh
+if grep -Fq 'type filter hook forward priority filter; policy drop;' scripts/firewall.sh; then
+  echo "Firewall must leave forwarding to WDTT" >&2
+  exit 1
+fi
 if grep -Fq 'iptables -F' scripts/firewall.sh; then
   echo "Firewall must not flush iptables" >&2
   exit 1
@@ -128,7 +138,7 @@ if grep -Fq 'tcp_congestion_control' scripts/optimize.sh; then
 fi
 
 grep -Fq '443/udp is publicly listening for Hysteria 2' scripts/diagnose.sh
-grep -Fq '443/tcp is publicly listening for HTTPS masquerade' scripts/diagnose.sh
+grep -Fq '443/tcp is publicly listening for MTProto' scripts/diagnose.sh
 grep -Fq 'scanner IPv4 blocklist is active' scripts/diagnose.sh
 grep -Fq 'scanner activity logging is active' scripts/diagnose.sh
 grep -Fq 'hysteria-vps-firewall.service is enabled for boot' scripts/diagnose.sh
@@ -144,7 +154,8 @@ grep -Fq 'ip saddr @scanner_blocklist_v4 counter drop' scripts/firewall.sh
 grep -Fq 'scanners-hits) scanners_hits ;;' scripts/firewall.sh
 
 grep -Fq 'HYSTERIA_IMAGE="tobyxdd/hysteria:v2"' vps-setup.sh
-grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_EMAIL} \${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq "envsubst '\${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq "envsubst '\${HYSTERIA_IMAGE} \${HYSTERIA_CERT_DIR}'" vps-setup.sh
 grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_PASSWORD}'" vps-setup.sh
 grep -Fq 'share -c /etc/hysteria/client.yaml' vps-setup.sh
 grep -Fq 'docker exec hysteria hysteria version' vps-setup.sh

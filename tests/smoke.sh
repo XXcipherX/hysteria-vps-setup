@@ -25,13 +25,12 @@ if ! command -v envsubst >/dev/null 2>&1; then
 fi
 
 export HYSTERIA_DOMAIN="example.com"
-export HYSTERIA_EMAIL="admin@example.com"
 export HYSTERIA_PASSWORD="safe_password-123"
 export HYSTERIA_IMAGE="tobyxdd/hysteria:v2"
+export HYSTERIA_CERT_DIR="/opt/mtproto-proxy/caddy/ssl/mtproto-mask/example.com"
 
-envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
-  < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
-envsubst '${HYSTERIA_IMAGE}' \
+envsubst '${HYSTERIA_PASSWORD}' < templates_for_script/hysteria > "$TMP_DIR/config.yaml"
+envsubst '${HYSTERIA_IMAGE} ${HYSTERIA_CERT_DIR}' \
   < templates_for_script/compose > "$TMP_DIR/docker-compose.yml"
 envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
   < templates_for_script/client > "$TMP_DIR/client.yaml"
@@ -63,21 +62,28 @@ with open(sys.argv[3], encoding="utf-8") as stream:
     client = yaml.safe_load(stream)
 
 assert hysteria["listen"] == ":443"
-assert hysteria["acme"]["type"] == "http"
-assert hysteria["acme"]["domains"] == ["example.com"]
-assert hysteria["acme"]["dir"] == "/var/lib/hysteria/acme"
+assert hysteria["tls"] == {
+    "cert": "/etc/hysteria/tls/cert.pem",
+    "key": "/etc/hysteria/tls/key.pem",
+}
+assert "acme" not in hysteria
 assert hysteria["auth"] == {
     "type": "password",
     "password": "safe_password-123",
 }
 assert "obfs" not in hysteria
-assert set(hysteria["masquerade"]) == {"listenHTTPS"}
-assert hysteria["masquerade"]["listenHTTPS"] == ":443"
+assert "masquerade" not in hysteria
 
 services = compose["services"]
 assert set(services) == {"hysteria"}
 assert services["hysteria"]["image"] == "tobyxdd/hysteria:v2"
 assert services["hysteria"]["network_mode"] == "host"
+assert services["hysteria"]["volumes"][1] == {
+    "type": "bind",
+    "source": "/opt/mtproto-proxy/caddy/ssl/mtproto-mask/example.com",
+    "target": "/etc/hysteria/tls",
+    "read_only": True,
+}
 
 assert client == {
     "server": "example.com:443",
@@ -103,17 +109,22 @@ if grep -R '\${HYSTERIA_' "$TMP_DIR"; then
 fi
 grep -Fq 'TABLE_NAME="hysteria_vps_filter"' scripts/firewall.sh
 grep -Fq 'udp dport { $udp_ports } accept' scripts/firewall.sh
-grep -Fq 'TCP_PORTS="${HVS_TCP_PORTS:-80,443}"' scripts/firewall.sh
-grep -Fq 'UDP_PORTS="${HVS_UDP_PORTS:-443}"' scripts/firewall.sh
+grep -Fq 'TCP_PORTS="${HVS_TCP_PORTS:-80,443,46002}"' scripts/firewall.sh
+grep -Fq 'UDP_PORTS="${HVS_UDP_PORTS:-443,56000,46000}"' scripts/firewall.sh
+grep -Fq 'iifname "csqtt1" ip saddr 10.66.67.0/24 accept' scripts/firewall.sh
 grep -Fq 'Saved current firewall rules for rollback' scripts/firewall.sh
 grep -Fq 'Safety timer armed' scripts/firewall.sh
-grep -Fq 'type filter hook forward priority filter; policy drop;' scripts/firewall.sh
+grep -Fq 'systemctl enable --now hysteria-vps-firewall.service' scripts/firewall.sh
+if grep -Fq 'type filter hook forward priority filter; policy drop;' scripts/firewall.sh; then
+  echo "Firewall must leave forwarding to WDTT and CSQTT" >&2
+  exit 1
+fi
 if grep -Fq 'iptables -F' scripts/firewall.sh; then
   echo "Firewall must not flush iptables" >&2
   exit 1
 fi
 
-grep -Fq 'UDP_BUFFER_BYTES="${HVS_UDP_BUFFER_BYTES:-16777216}"' scripts/optimize.sh
+grep -Fq 'UDP_BUFFER_BYTES="${HVS_UDP_BUFFER_BYTES:-33554432}"' scripts/optimize.sh
 grep -Fq 'net.core.rmem_max = $UDP_BUFFER_BYTES' scripts/optimize.sh
 grep -Fq 'net.core.wmem_max = $UDP_BUFFER_BYTES' scripts/optimize.sh
 grep -Fq 'net.core.netdev_max_backlog = $NETDEV_MAX_BACKLOG' scripts/optimize.sh
@@ -128,7 +139,12 @@ if grep -Fq 'tcp_congestion_control' scripts/optimize.sh; then
 fi
 
 grep -Fq '443/udp is publicly listening for Hysteria 2' scripts/diagnose.sh
-grep -Fq '443/tcp is publicly listening for HTTPS masquerade' scripts/diagnose.sh
+grep -Fq '443/tcp is publicly listening for MTProto' scripts/diagnose.sh
+grep -Fq '$WDTT_PORT/udp is publicly listening for WDTT' scripts/diagnose.sh
+grep -Fq '$CSQTT_PEER_PORT/udp is publicly listening for CSQTT' scripts/diagnose.sh
+grep -Fq '$CSQTT_WEB_PORT/tcp is publicly listening for the CSQTT web panel' scripts/diagnose.sh
+grep -Fq 'container wdtt is running' scripts/diagnose.sh
+grep -Fq 'container csqtt is running' scripts/diagnose.sh
 grep -Fq 'scanner IPv4 blocklist is active' scripts/diagnose.sh
 grep -Fq 'scanner activity logging is active' scripts/diagnose.sh
 grep -Fq 'hysteria-vps-firewall.service is enabled for boot' scripts/diagnose.sh
@@ -144,7 +160,12 @@ grep -Fq 'ip saddr @scanner_blocklist_v4 counter drop' scripts/firewall.sh
 grep -Fq 'scanners-hits) scanners_hits ;;' scripts/firewall.sh
 
 grep -Fq 'HYSTERIA_IMAGE="tobyxdd/hysteria:v2"' vps-setup.sh
-grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_EMAIL} \${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq 'CSQTT_PEER_PORT="${HVS_CSQTT_PEER_PORT:-46000}"' vps-setup.sh
+grep -Fq 'CSQTT_WEB_PORT="${HVS_CSQTT_WEB_PORT:-46002}"' vps-setup.sh
+grep -Fq 'HVS_TCP_PORTS="80,443,$CSQTT_WEB_PORT"' vps-setup.sh
+grep -Fq 'HVS_UDP_PORTS="443,$WDTT_PORT,$CSQTT_PEER_PORT"' vps-setup.sh
+grep -Fq "envsubst '\${HYSTERIA_PASSWORD}'" vps-setup.sh
+grep -Fq "envsubst '\${HYSTERIA_IMAGE} \${HYSTERIA_CERT_DIR}'" vps-setup.sh
 grep -Fq "envsubst '\${HYSTERIA_DOMAIN} \${HYSTERIA_PASSWORD}'" vps-setup.sh
 grep -Fq 'share -c /etc/hysteria/client.yaml' vps-setup.sh
 grep -Fq 'docker exec hysteria hysteria version' vps-setup.sh

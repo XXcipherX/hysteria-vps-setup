@@ -6,7 +6,7 @@ STATE_DIR="${HVS_STATE_DIR:-/var/lib/hysteria-vps-setup}"
 SYSCTL_FILE="/etc/sysctl.d/90-hysteria-vps-setup.conf"
 STATE_FILE="$STATE_DIR/optimize.state"
 DRY_RUN="${HVS_DRY_RUN:-0}"
-UDP_BUFFER_BYTES="${HVS_UDP_BUFFER_BYTES:-16777216}"
+UDP_BUFFER_BYTES="${HVS_UDP_BUFFER_BYTES:-33554432}"
 UDP_MIN_BYTES="${HVS_UDP_MIN_BYTES:-16384}"
 NETDEV_MAX_BACKLOG="${HVS_NETDEV_MAX_BACKLOG:-250000}"
 NETDEV_BUDGET="${HVS_NETDEV_BUDGET:-600}"
@@ -79,7 +79,7 @@ EOF
 write_sysctl_file() {
   cat > "$SYSCTL_FILE" <<EOF
 # hysteria-vps-setup UDP/QUIC network profile
-# Hysteria 2 performance guide recommends at least 16 MiB socket maxima on Linux.
+# Hysteria 2 needs at least 16 MiB; 32 MiB also satisfies the CSQTT data plane.
 
 net.core.rmem_max = $UDP_BUFFER_BYTES
 net.core.wmem_max = $UDP_BUFFER_BYTES

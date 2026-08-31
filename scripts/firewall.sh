@@ -38,8 +38,8 @@ default_ssh_port() {
 }
 
 SSH_PORT="${SSH_PORT:-$(default_ssh_port)}"
-TCP_PORTS="${HVS_TCP_PORTS:-80,443}"
-UDP_PORTS="${HVS_UDP_PORTS:-443}"
+TCP_PORTS="${HVS_TCP_PORTS:-80,443,46002}"
+UDP_PORTS="${HVS_UDP_PORTS:-443,56000,46000}"
 WHITELIST="${HVS_WHITELIST:-}"
 SYN_RATE="${HVS_SYN_RATE:-200}"
 SYN_BURST="${HVS_SYN_BURST:-400}"
@@ -260,6 +260,7 @@ $(set_elements_block "$bl4")
         type filter hook input priority filter; policy drop;
 
         iif lo accept
+        iifname "csqtt1" ip saddr 10.66.67.0/24 accept
         ip saddr @scanner_blocklist_v4 meter scanner_log4 { ip saddr timeout $SCANNER_LOG_TIMEOUT limit rate $SCANNER_LOG_RATE/minute burst $SCANNER_LOG_BURST packets } limit rate $SCANNER_LOG_GLOBAL_RATE/minute burst $SCANNER_LOG_GLOBAL_BURST packets log prefix "$SCANNER_LOG_TAG " level info
         ip saddr @scanner_blocklist_v4 counter drop
 
@@ -299,10 +300,6 @@ $(set_elements_block "$bl4")
         udp dport { $udp_ports } accept
 
         counter drop
-    }
-
-    chain forward {
-        type filter hook forward priority filter; policy drop;
     }
 
     chain output {
@@ -485,11 +482,12 @@ apply_firewall() {
   fi
 
   if [[ "$firewall_confirmed" == "1" ]]; then
-    write_service
-    systemctl daemon-reload
-    systemctl enable hysteria-vps-firewall.service
+    # ExecStart reads NFT_FILE, so persist the validated rules before --now.
     install -d -m 0755 "$CONF_DIR"
     install -m 0644 "$apply_file" "$NFT_FILE"
+    write_service
+    systemctl daemon-reload
+    systemctl enable --now hysteria-vps-firewall.service
     rm -f "$apply_file"
     APPLY_FILE=""
     cat > "$STATE_DIR/firewall.state" <<EOF

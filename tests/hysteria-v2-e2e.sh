@@ -39,13 +39,13 @@ docker compose version
 install -d -m 0700 "$E2E_DIR/hysteria/acme"
 
 export HYSTERIA_DOMAIN="localhost"
-export HYSTERIA_EMAIL="ci@example.com"
 export HYSTERIA_PASSWORD="hysteria-v2-e2e-password"
 export HYSTERIA_IMAGE
+export HYSTERIA_CERT_DIR="$E2E_DIR/hysteria/acme"
 
-envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_EMAIL} ${HYSTERIA_PASSWORD}' \
+envsubst '${HYSTERIA_PASSWORD}' \
   < "$REPO_ROOT/templates_for_script/hysteria" > "$E2E_DIR/hysteria/config.yaml"
-envsubst '${HYSTERIA_IMAGE}' \
+envsubst '${HYSTERIA_IMAGE} ${HYSTERIA_CERT_DIR}' \
   < "$REPO_ROOT/templates_for_script/compose" > "$COMPOSE_FILE"
 envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
   < "$REPO_ROOT/templates_for_script/client" > "$E2E_DIR/client.yaml"
@@ -53,8 +53,8 @@ envsubst '${HYSTERIA_DOMAIN} ${HYSTERIA_PASSWORD}' \
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj '/CN=localhost' \
   -addext 'subjectAltName=DNS:localhost' \
-  -keyout "$E2E_DIR/hysteria/acme/server.key" \
-  -out "$E2E_DIR/hysteria/acme/server.crt" >/dev/null 2>&1
+  -keyout "$E2E_DIR/hysteria/acme/key.pem" \
+  -out "$E2E_DIR/hysteria/acme/cert.pem" >/dev/null 2>&1
 
 python3 - \
   "$E2E_DIR/hysteria/config.yaml" \
@@ -68,12 +68,12 @@ with open(server_path, encoding="utf-8") as stream:
     config = yaml.safe_load(stream)
 
 config["listen"] = f":{port}"
-config.pop("acme")
-config["tls"] = {
-    "cert": "/var/lib/hysteria/acme/server.crt",
-    "key": "/var/lib/hysteria/acme/server.key",
+assert config["tls"] == {
+    "cert": "/etc/hysteria/tls/cert.pem",
+    "key": "/etc/hysteria/tls/key.pem",
 }
-config["masquerade"]["listenHTTPS"] = f":{port}"
+assert "acme" not in config
+assert "masquerade" not in config
 
 with open(server_path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(config, stream, sort_keys=False)

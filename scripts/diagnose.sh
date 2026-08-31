@@ -13,6 +13,9 @@ FIREWALL_BLOCKLIST_SET="scanner_blocklist_v4"
 FIREWALL_SCANNER_LOG_TAG="[scanners-activity]"
 OPTIMIZE_STATE="$STATE_DIR/optimize.state"
 INSTALL_STATE="$STATE_DIR/install.env"
+WDTT_PORT="${HVS_WDTT_PORT:-56000}"
+CSQTT_PEER_PORT="${HVS_CSQTT_PEER_PORT:-46000}"
+CSQTT_WEB_PORT="${HVS_CSQTT_WEB_PORT:-46002}"
 
 OK=0
 WARN=0
@@ -214,6 +217,18 @@ check_docker() {
     status_line FAIL "container hysteria is not running"
   fi
 
+  if container_running wdtt; then
+    status_line OK "container wdtt is running"
+  else
+    status_line FAIL "container wdtt is not running"
+  fi
+
+  if container_running csqtt; then
+    status_line OK "container csqtt is running"
+  else
+    status_line FAIL "container csqtt is not running"
+  fi
+
   version="$(hysteria_version)"
   [[ -n "$version" ]] && status_line INFO "$version"
 }
@@ -235,10 +250,14 @@ with open(sys.argv[2], encoding="utf-8") as stream:
 assert isinstance(server, dict)
 assert isinstance(client, dict)
 assert server.get("listen") == ":443"
-assert server.get("acme", {}).get("type") == "http"
+assert server.get("tls") == {
+    "cert": "/etc/hysteria/tls/cert.pem",
+    "key": "/etc/hysteria/tls/key.pem",
+}
+assert "acme" not in server
 assert server.get("auth", {}).get("type") == "password"
 assert server.get("auth", {}).get("password")
-assert server.get("masquerade", {}).get("listenHTTPS") == ":443"
+assert "masquerade" not in server
 assert client.get("auth") == server["auth"]["password"]
 assert client.get("server", "").endswith(":443")
 assert client.get("tls", {}).get("sni")
@@ -271,7 +290,7 @@ check_ports() {
   fi
 
   if port_has_non_loopback_listener tcp 443; then
-    status_line OK "443/tcp is publicly listening for HTTPS masquerade"
+    status_line OK "443/tcp is publicly listening for MTProto"
   elif port_listening tcp 443; then
     status_line FAIL "443/tcp is loopback-only"
   else
@@ -279,11 +298,35 @@ check_ports() {
   fi
 
   if port_has_non_loopback_listener tcp 80; then
-    status_line INFO "80/tcp currently has a public ACME listener"
+    status_line OK "80/tcp is publicly listening for MTProto Caddy ACME"
   elif port_listening tcp 80; then
     status_line WARN "80/tcp is listening only on loopback"
   else
-    status_line INFO "80/tcp is idle; Hysteria opens it when HTTP-01 validation needs it"
+    status_line WARN "80/tcp is not listening; MTProto Caddy certificate renewal may fail"
+  fi
+
+  if port_has_non_loopback_listener udp "$WDTT_PORT"; then
+    status_line OK "$WDTT_PORT/udp is publicly listening for WDTT"
+  elif port_listening udp "$WDTT_PORT"; then
+    status_line FAIL "$WDTT_PORT/udp is loopback-only"
+  else
+    status_line FAIL "$WDTT_PORT/udp is not listening"
+  fi
+
+  if port_has_non_loopback_listener udp "$CSQTT_PEER_PORT"; then
+    status_line OK "$CSQTT_PEER_PORT/udp is publicly listening for CSQTT"
+  elif port_listening udp "$CSQTT_PEER_PORT"; then
+    status_line FAIL "$CSQTT_PEER_PORT/udp is loopback-only"
+  else
+    status_line FAIL "$CSQTT_PEER_PORT/udp is not listening"
+  fi
+
+  if port_has_non_loopback_listener tcp "$CSQTT_WEB_PORT"; then
+    status_line OK "$CSQTT_WEB_PORT/tcp is publicly listening for the CSQTT web panel"
+  elif port_listening tcp "$CSQTT_WEB_PORT"; then
+    status_line FAIL "$CSQTT_WEB_PORT/tcp is loopback-only"
+  else
+    status_line FAIL "$CSQTT_WEB_PORT/tcp is not listening"
   fi
 }
 
@@ -414,8 +457,13 @@ emit_json() {
   printf '"client_uri":%s,' "$(bool_command test -s "$CLIENT_URI_FILE")"
   printf '"install_state":%s,' "$(bool_command test -f "$INSTALL_STATE")"
   printf '"hysteria_running":%s,' "$(bool_command container_running hysteria)"
+  printf '"wdtt_running":%s,' "$(bool_command container_running wdtt)"
+  printf '"csqtt_running":%s,' "$(bool_command container_running csqtt)"
   printf '"udp_443_public":%s,' "$(bool_command port_has_non_loopback_listener udp 443)"
   printf '"tcp_443_public":%s,' "$(bool_command port_has_non_loopback_listener tcp 443)"
+  printf '"wdtt_udp_public":%s,' "$(bool_command port_has_non_loopback_listener udp "$WDTT_PORT")"
+  printf '"csqtt_udp_public":%s,' "$(bool_command port_has_non_loopback_listener udp "$CSQTT_PEER_PORT")"
+  printf '"csqtt_web_tcp_public":%s,' "$(bool_command port_has_non_loopback_listener tcp "$CSQTT_WEB_PORT")"
   printf '"firewall_active":%s,' "$(bool_command nft list table inet "$FIREWALL_TABLE")"
   printf '"firewall_blocklist_active":%s,' "$(bool_command nft list set inet "$FIREWALL_TABLE" "$FIREWALL_BLOCKLIST_SET")"
   printf '"firewall_scanner_logging_active":%s,' "$(bool_command firewall_scanner_logging_active)"

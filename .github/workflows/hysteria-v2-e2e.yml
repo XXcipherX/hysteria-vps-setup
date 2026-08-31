@@ -2,7 +2,7 @@ name: hysteria-v2-e2e
 
 on:
   push:
-    branches: [master]
+    branches: [master, feat/mtproto-wdtt-csqtt-compat]
   pull_request:
   schedule:
     - cron: "17 4 * * 1"

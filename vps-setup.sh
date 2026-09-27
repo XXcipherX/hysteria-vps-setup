@@ -144,11 +144,11 @@ read_security_options() {
     SSH_USER=""
     export SSH_PORT SSH_USER
   else
-    read -r -e -p "Enter SSH port (default 22; ports 80 and 443 are reserved): " input_ssh_port
+    read -r -e -p "Enter SSH port (default 22; TCP ports 80, 443, and $CSQTT_WEB_PORT are reserved): " input_ssh_port
     input_ssh_port="${input_ssh_port:-22}"
     while ! [[ "$input_ssh_port" =~ ^[0-9]+$ ]] \
       || (( 10#$input_ssh_port < 1 || 10#$input_ssh_port > 65535 )) \
-      || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" ]]; do
+      || [[ "$input_ssh_port" == "80" || "$input_ssh_port" == "443" || "$input_ssh_port" == "$CSQTT_WEB_PORT" ]]; do
       read -r -e -p "Invalid or reserved port. Enter again: " input_ssh_port
       input_ssh_port="${input_ssh_port:-22}"
     done
@@ -491,6 +491,9 @@ write_install_state() {
 installed_at=$(date -Is)
 install_dir=$INSTALL_DIR
 domain=$HYSTERIA_DOMAIN
+wdtt_port=$WDTT_PORT
+csqtt_peer_port=$CSQTT_PEER_PORT
+csqtt_web_port=$CSQTT_WEB_PORT
 hysteria_image=$HYSTERIA_IMAGE
 ssh_user=$install_state_ssh_user
 ssh_port=$SSH_PORT

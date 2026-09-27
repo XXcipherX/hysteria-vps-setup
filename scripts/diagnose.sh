@@ -11,6 +11,9 @@ CLIENT_URI_FILE="$STATE_DIR/client.uri"
 FIREWALL_TABLE="${HVS_FIREWALL_TABLE:-hysteria_vps_filter}"
 FIREWALL_BLOCKLIST_SET="scanner_blocklist_v4"
 FIREWALL_SCANNER_LOG_TAG="[scanners-activity]"
+FIREWALL_NFT_FILE="${HVS_CONF_DIR:-/etc/hysteria-vps-setup}/firewall.nft"
+FIREWALL_SERVICE="hysteria-vps-firewall.service"
+FIREWALL_SAFETY_UNIT="hysteria-vps-fw-safety"
 OPTIMIZE_STATE="$STATE_DIR/optimize.state"
 INSTALL_STATE="$STATE_DIR/install.env"
 
@@ -66,11 +69,6 @@ sysctl_value() {
   sysctl -n "$1" 2>/dev/null || true
 }
 
-service_active() {
-  have_cmd systemctl || return 2
-  systemctl is-active --quiet "$1" 2>/dev/null
-}
-
 service_enabled() {
   have_cmd systemctl || return 2
   systemctl is-enabled --quiet "$1" 2>/dev/null
@@ -82,8 +80,18 @@ xanmod_active() {
 
 firewall_scanner_logging_active() {
   have_cmd nft || return 2
-  nft list chain inet "$FIREWALL_TABLE" input 2>/dev/null \
+  nft list table inet "$FIREWALL_TABLE" 2>/dev/null \
     | grep -F "$FIREWALL_SCANNER_LOG_TAG" >/dev/null
+}
+
+firewall_safety_active() {
+  have_cmd systemctl || return 2
+  systemctl is-active --quiet "$FIREWALL_SAFETY_UNIT.timer" 2>/dev/null \
+    || systemctl is-active --quiet "$FIREWALL_SAFETY_UNIT.service" 2>/dev/null
+}
+
+firewall_rules_saved() {
+  [[ -f "$FIREWALL_NFT_FILE" && ! -L "$FIREWALL_NFT_FILE" && -r "$FIREWALL_NFT_FILE" ]]
 }
 
 container_running() {
@@ -301,14 +309,16 @@ check_dns() {
 }
 
 check_firewall() {
-  local expected
+  local expected firewall_active=0 firewall_enabled=0
   [[ "$JSON" == "0" ]] && echo "Firewall"
   expected="$(state_value firewall_enabled "$INSTALL_STATE")"
+
+  have_cmd nft && nft list table inet "$FIREWALL_TABLE" >/dev/null 2>&1 && firewall_active=1
+  service_enabled "$FIREWALL_SERVICE" && firewall_enabled=1
+
   if ! have_cmd nft; then
-    status_line WARN "nft command is missing"
-    return
-  fi
-  if nft list table inet "$FIREWALL_TABLE" >/dev/null 2>&1; then
+    status_line WARN "nft command is missing; firewall table cannot be inspected"
+  elif ((firewall_active)); then
     status_line OK "nft table inet $FIREWALL_TABLE is active"
     if nft list set inet "$FIREWALL_TABLE" "$FIREWALL_BLOCKLIST_SET" >/dev/null 2>&1; then
       status_line OK "scanner IPv4 blocklist is active"
@@ -320,20 +330,36 @@ check_firewall() {
     else
       status_line WARN "scanner activity logging is missing from the active firewall"
     fi
-  elif [[ "$expected" == "y" ]]; then
-    status_line FAIL "installer firewall was requested but is not active"
+  elif ((firewall_enabled)) || [[ "$expected" == "y" ]]; then
+    status_line FAIL "nft table inet $FIREWALL_TABLE is missing although firewall persistence was requested"
   else
     status_line INFO "installer firewall is not active"
   fi
-  if service_enabled hysteria-vps-firewall.service; then
-    status_line OK "hysteria-vps-firewall.service is enabled for boot"
-    if ! service_active hysteria-vps-firewall.service; then
-      status_line WARN "firewall service is enabled but not active"
+
+  if ! have_cmd systemctl; then
+    status_line WARN "systemctl command is missing; firewall boot persistence cannot be verified"
+  elif ((firewall_enabled)); then
+    status_line OK "$FIREWALL_SERVICE is enabled for boot"
+    if systemctl is-failed --quiet "$FIREWALL_SERVICE"; then
+      status_line FAIL "$FIREWALL_SERVICE failed to load the persistent firewall"
+    fi
+    if firewall_rules_saved; then
+      status_line OK "persistent firewall rules are saved"
+    else
+      status_line FAIL "persistent firewall rules are missing or unreadable: $FIREWALL_NFT_FILE"
     fi
   elif [[ "$expected" == "y" ]]; then
     status_line FAIL "firewall persistence was requested but is not enabled"
   else
     status_line INFO "firewall service is not enabled"
+  fi
+
+  if have_cmd systemctl; then
+    if firewall_safety_active; then
+      status_line FAIL "firewall safety rollback is still active"
+    else
+      status_line OK "firewall safety rollback is inactive"
+    fi
   fi
 }
 
@@ -419,7 +445,9 @@ emit_json() {
   printf '"firewall_active":%s,' "$(bool_command nft list table inet "$FIREWALL_TABLE")"
   printf '"firewall_blocklist_active":%s,' "$(bool_command nft list set inet "$FIREWALL_TABLE" "$FIREWALL_BLOCKLIST_SET")"
   printf '"firewall_scanner_logging_active":%s,' "$(bool_command firewall_scanner_logging_active)"
-  printf '"firewall_boot_enabled":%s,' "$(bool_command service_enabled hysteria-vps-firewall.service)"
+  printf '"firewall_boot_enabled":%s,' "$(bool_command service_enabled "$FIREWALL_SERVICE")"
+  printf '"firewall_rules_saved":%s,' "$(bool_command firewall_rules_saved)"
+  printf '"firewall_safety_active":%s,' "$(bool_command firewall_safety_active)"
   printf '"xanmod_active":%s,' "$(bool_command xanmod_active)"
   printf '"rmem_max":"%s",' "$(json_escape "$rmem")"
   printf '"wmem_max":"%s",' "$(json_escape "$wmem")"

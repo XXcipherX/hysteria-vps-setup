@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            gettext-base nftables python3-yaml shellcheck
+            gettext-base iproute2 nftables python3-yaml shellcheck
 
       - name: Syntax
         run: bash -n vps-setup.sh scripts/*.sh tests/*.sh
@@ -36,3 +36,6 @@ jobs:
             HVS_STATE_DIR="$RUNNER_TEMP/hysteria-vps-state" \
             SSH_PORT=22 \
             bash scripts/firewall.sh apply
+
+      - name: Firewall network namespace integration
+        run: sudo bash tests/firewall-netns.sh

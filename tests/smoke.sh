@@ -18,6 +18,8 @@ trap 'rm -rf -- "$TMP_DIR"' EXIT
 cd "$REPO_ROOT"
 
 bash -n vps-setup.sh scripts/*.sh tests/*.sh
+grep -Fq 'if [[ "${BASH_SOURCE[0]}" == "$0" ]]' scripts/firewall.sh
+grep -Fq 'FIREWALL NETNS: OK' tests/firewall-netns.sh
 
 if ! command -v envsubst >/dev/null 2>&1; then
   echo "envsubst is missing; skipping template render smoke"
@@ -105,6 +107,22 @@ grep -Fq 'TABLE_NAME="hysteria_vps_filter"' scripts/firewall.sh
 grep -Fq 'udp dport { $udp_ports } accept' scripts/firewall.sh
 grep -Fq 'TCP_PORTS="${HVS_TCP_PORTS:-80,443}"' scripts/firewall.sh
 grep -Fq 'UDP_PORTS="${HVS_UDP_PORTS:-443}"' scripts/firewall.sh
+grep -Fq 'UDP_RATE="${HVS_UDP_RATE:-200}"' scripts/firewall.sh
+grep -Fq 'UDP_BURST="${HVS_UDP_BURST:-400}"' scripts/firewall.sh
+grep -Fq 'ct state new meter udp4' scripts/firewall.sh
+grep -Fq 'ct state new meter udp6' scripts/firewall.sh
+grep -Fq 'udp dport { $udp_ports } ct state new drop' scripts/firewall.sh
+grep -Fq 'meta nfproto ipv4 udp sport 67 udp dport 68 accept' scripts/firewall.sh
+grep -Fq 'meta nfproto ipv6 udp sport 547 udp dport 546 accept' scripts/firewall.sh
+grep -Fq 'tcp flags & (fin|syn|rst|ack) == syn ct state new meter svc4' scripts/firewall.sh
+grep -Fq 'type filter hook prerouting priority raw; policy accept;' scripts/firewall.sh
+grep -Fq 'type ipv4_addr . inet_proto . inet_service' scripts/firewall.sh
+grep -Fq 'SCANNER_LOG_SET_SIZE="${HVS_SCANNER_LOG_SET_SIZE:-16384}"' scripts/firewall.sh
+grep -Fq 'read -r -t "$confirmation_timeout"' scripts/firewall.sh
+grep -Fq 'safety_units_stopped()' scripts/firewall.sh
+grep -Fq 'firewall_config_snapshot()' scripts/firewall.sh
+grep -Fq 'ExecStartPre=-/usr/sbin/nft add table inet $TABLE_NAME' scripts/firewall.sh
+! grep -Fq 'ExecStop=-/usr/sbin/nft delete table inet $TABLE_NAME' scripts/firewall.sh
 grep -Fq 'Saved current firewall rules for rollback' scripts/firewall.sh
 grep -Fq 'Safety timer armed' scripts/firewall.sh
 grep -Fq 'type filter hook forward priority filter; policy drop;' scripts/firewall.sh
@@ -131,7 +149,9 @@ grep -Fq '443/udp is publicly listening for Hysteria 2' scripts/diagnose.sh
 grep -Fq '443/tcp is publicly listening for HTTPS masquerade' scripts/diagnose.sh
 grep -Fq 'scanner IPv4 blocklist is active' scripts/diagnose.sh
 grep -Fq 'scanner activity logging is active' scripts/diagnose.sh
-grep -Fq 'hysteria-vps-firewall.service is enabled for boot' scripts/diagnose.sh
+grep -Fq '$FIREWALL_SERVICE is enabled for boot' scripts/diagnose.sh
+grep -Fq '"firewall_rules_saved":%s' scripts/diagnose.sh
+grep -Fq '"firewall_safety_active":%s' scripts/diagnose.sh
 grep -Fq 'XanMod kernel is active:' scripts/diagnose.sh
 
 [[ "$(grep -Evc '^[[:space:]]*(#|$)' lists/cyberok-skipa-v4.txt)" -eq 151 ]]
@@ -140,6 +160,8 @@ grep -Fq 'BLOCKLIST_FILE="${HVS_BLOCKLIST_FILE:-$SCRIPT_DIR/../lists/cyberok-ski
 grep -Fq 'collect_blocklist' scripts/firewall.sh
 grep -Fq 'set scanner_blocklist_v4 {' scripts/firewall.sh
 grep -Fq 'SCANNER_LOG_TAG="[scanners-activity]"' scripts/firewall.sh
+grep -Fq 'limit name "scanner_log_all" add @scanner_port4' scripts/firewall.sh
+grep -Fq 'limit name "scanner_log_all" add @scanner_proto4' scripts/firewall.sh
 grep -Fq 'ip saddr @scanner_blocklist_v4 counter drop' scripts/firewall.sh
 grep -Fq 'scanners-hits) scanners_hits ;;' scripts/firewall.sh
 
@@ -170,6 +192,9 @@ SCANNER_MOCK_BIN="$TMP_DIR/scanner-mock-bin"
 mkdir -p "$SCANNER_MOCK_BIN"
 cat > "$SCANNER_MOCK_BIN/nft" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${MOCK_NFT_CALLS:-}" ]]; then
+  printf '%s\n' "$*" >> "$MOCK_NFT_CALLS"
+fi
 if [[ "${MOCK_NFT_MODE:-active}" == "active" ]]; then
   printf '%s\n' 'ip saddr @scanner_blocklist_v4 log prefix "[scanners-activity] "'
 else
@@ -193,50 +218,51 @@ esac
 EOF
 chmod +x "$SCANNER_MOCK_BIN/nft" "$SCANNER_MOCK_BIN/journalctl"
 
-SCANNER_TEST_RUNNER=()
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    SCANNER_TEST_RUNNER=(sudo -n)
-  else
-    echo "passwordless sudo is unavailable; skipping scanners-hits behavior smoke"
-  fi
+NFT_SNAPSHOT_CALLS="$TMP_DIR/nft-snapshot.calls"
+PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_NFT_CALLS="$NFT_SNAPSHOT_CALLS" bash -c '
+  set -- status
+  source scripts/firewall.sh >/dev/null
+  firewall_config_snapshot >/dev/null
+'
+grep -Fxq -- '-s -t list table inet hysteria_vps_filter' "$NFT_SNAPSHOT_CALLS"
+grep -Fxq -- '-s list set inet hysteria_vps_filter whitelist_v4' "$NFT_SNAPSHOT_CALLS"
+grep -Fxq -- '-s list set inet hysteria_vps_filter whitelist_v6' "$NFT_SNAPSHOT_CALLS"
+grep -Fxq -- '-s list set inet hysteria_vps_filter scanner_blocklist_v4' "$NFT_SNAPSHOT_CALLS"
+grep -Fxq -- '-s list set inet hysteria_vps_filter manual_blocklist_v4' "$NFT_SNAPSHOT_CALLS"
+grep -Fxq -- '-s list set inet hysteria_vps_filter manual_blocklist_v6' "$NFT_SNAPSHOT_CALLS"
+! grep -Eq 'scanner_(port|proto)4' "$NFT_SNAPSHOT_CALLS"
+
+run_scanner_hits() {
+  local journal_mode="$1" nft_mode="${2:-active}"
+  PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_JOURNAL_MODE="$journal_mode" MOCK_NFT_MODE="$nft_mode" \
+    bash -c 'set -euo pipefail; set -- status; source scripts/firewall.sh; require_root() { :; }; scanners_hits'
+}
+
+scanner_output="$(run_scanner_hits hits)"
+[[ "${scanner_output%%$'\n'*}" == 'Logged scanner attempts (deduplicated, rate-limited):' ]]
+! grep -Fq '[scanners-activity]' <<< "$scanner_output"
+[[ "$(grep -c '^SOURCE: ' <<< "$scanner_output")" -eq 2 ]]
+grep -Fxq 'SOURCE: 85.142.100.104' <<< "$scanner_output"
+grep -Fxq 'SOURCE: 212.192.158.168' <<< "$scanner_output"
+grep -Eq '^PROTO[[:space:]]+PORT[[:space:]]+ATTEMPT$' <<< "$scanner_output"
+grep -Eq '^TCP[[:space:]]+443[[:space:]]+2026-08-13 04:17:23$' <<< "$scanner_output"
+grep -Eq '^UDP[[:space:]]+443[[:space:]]+2026-08-13 04:18:00$' <<< "$scanner_output"
+grep -Eq '^TCP[[:space:]]+80[[:space:]]+2026-08-13 04:19:00$' <<< "$scanner_output"
+
+scanner_output="$(run_scanner_hits empty)"
+grep -Fq 'No scanners-activity events logged since the current boot' <<< "$scanner_output"
+
+if run_scanner_hits fail > "$TMP_DIR/scanners-hits-fail.log" 2>&1; then
+  echo "scanners-hits unexpectedly accepted a journalctl failure" >&2
+  exit 1
 fi
+grep -Fq 'Could not read the kernel journal' "$TMP_DIR/scanners-hits-fail.log"
 
-if [[ ${EUID:-$(id -u)} -eq 0 || ${#SCANNER_TEST_RUNNER[@]} -gt 0 ]]; then
-  scanner_output="$(
-    "${SCANNER_TEST_RUNNER[@]}" env PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_JOURNAL_MODE=hits \
-      bash scripts/firewall.sh scanners-hits
-  )"
-  [[ "${scanner_output%%$'\n'*}" == 'Logged scanner attempts (rate-limited):' ]]
-  ! grep -Fq '[scanners-activity]' <<< "$scanner_output"
-  [[ "$(grep -c '^SOURCE: ' <<< "$scanner_output")" -eq 2 ]]
-  grep -Fxq 'SOURCE: 85.142.100.104' <<< "$scanner_output"
-  grep -Fxq 'SOURCE: 212.192.158.168' <<< "$scanner_output"
-  grep -Eq '^PROTO[[:space:]]+PORT[[:space:]]+FIRST ATTEMPT[[:space:]]+LAST ATTEMPT$' <<< "$scanner_output"
-  grep -Eq '^TCP[[:space:]]+443[[:space:]]+2026-08-13 04:17:22[[:space:]]+2026-08-13 04:17:23$' <<< "$scanner_output"
-  grep -Eq '^UDP[[:space:]]+443[[:space:]]+2026-08-13 04:18:00[[:space:]]+2026-08-13 04:18:00$' <<< "$scanner_output"
-  grep -Eq '^TCP[[:space:]]+80[[:space:]]+2026-08-13 04:19:00[[:space:]]+2026-08-13 04:19:00$' <<< "$scanner_output"
-
-  scanner_output="$(
-    "${SCANNER_TEST_RUNNER[@]}" env PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_JOURNAL_MODE=empty \
-      bash scripts/firewall.sh scanners-hits
-  )"
-  grep -Fq 'No scanners-activity events logged since the current boot' <<< "$scanner_output"
-
-  if "${SCANNER_TEST_RUNNER[@]}" env PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_JOURNAL_MODE=fail \
-    bash scripts/firewall.sh scanners-hits > "$TMP_DIR/scanners-hits-fail.log" 2>&1; then
-    echo "scanners-hits unexpectedly accepted a journalctl failure" >&2
-    exit 1
-  fi
-  grep -Fq 'Could not read the kernel journal' "$TMP_DIR/scanners-hits-fail.log"
-
-  if "${SCANNER_TEST_RUNNER[@]}" env PATH="$SCANNER_MOCK_BIN:$PATH" MOCK_NFT_MODE=inactive \
-    bash scripts/firewall.sh scanners-hits > "$TMP_DIR/scanners-hits-inactive.log" 2>&1; then
-    echo "scanners-hits unexpectedly accepted inactive logging" >&2
-    exit 1
-  fi
-  grep -Fq 'Scanner activity logging is not active; run firewall.sh apply first' \
-    "$TMP_DIR/scanners-hits-inactive.log"
+if run_scanner_hits hits inactive > "$TMP_DIR/scanners-hits-inactive.log" 2>&1; then
+  echo "scanners-hits unexpectedly accepted inactive logging" >&2
+  exit 1
 fi
+grep -Fq 'Scanner activity logging is not active; run firewall.sh apply first' \
+  "$TMP_DIR/scanners-hits-inactive.log"
 
 echo "SMOKE: OK"
